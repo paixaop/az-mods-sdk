@@ -223,7 +223,7 @@ SQLite rows, fake physical USB ports, mount changes, file creation invalidation 
 containment, database symlink rejection and live-WAL rejection. A deliberately broken source identity is required to fail the cache test.
 
 The final published clean checkouts (core `f7f3fd0c329d5a338cd9698d4f70ad81b7c4284c`,
-SDK `53ccfb10c4853a5597bc3ed8b25718878d81620d`) were exercised in the local arm64 Linux
+SDK `055f69893b09cbbf3e5b5f9e297791bd8be684a0`) were exercised in the local arm64 Linux
 test image with `AZ_CORE_TEST_ROOT` bound to the exact core checkout. Python unittest
 discovery ran 146 tests: all passed, with only the original-firmware-input binding test
 skipped because its retained source artifact was unavailable. The run included the full
