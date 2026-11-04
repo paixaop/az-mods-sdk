@@ -222,7 +222,7 @@ journal overflow and concurrent consumers. The disk provider test covers real re
 SQLite rows, fake physical USB ports, mount changes, file creation invalidation and path
 containment, database symlink rejection and live-WAL rejection. A deliberately broken source identity is required to fail the cache test.
 
-The final published clean checkouts (core `61227fd48db6d145e507a8138870daae1643dd8d`,
+The final published clean checkouts (core `bb7f33ffbce049dac795ed3aece5c58bc3721453`,
 SDK `426e5c8c447707ee2c2ce8331ee5b3c3be9404c9`) were exercised in the local arm64 Linux
 test image with `AZ_CORE_TEST_ROOT` bound to the exact core checkout. Python unittest
 discovery ran 146 tests: all passed, with only the original-firmware-input binding test
