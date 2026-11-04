@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1090" viewBox="0 0 960 1090" role="img" aria-labelledby="title desc">
+  <title id="title">AZ-MODS SDK architecture</title>
+  <desc id="desc">A C or C++ mod builds through azmod-pack into an ARM64 shared library and an installable package. The same source can be rebuilt for a host test harness. On a deck or emulator the external AZ-MODS core loads the approved mod inside EP147, calls its entry point and init, and dispatches callbacks. The mod calls the core service table. Its optional library service exposes three distinct paths for stored USB data, live observations and asynchronous native commands.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 9 5 1 9Z" fill="#426061"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #192f34; }
+      .title { font-size: 34px; font-weight: 700; }
+      .section { font-size: 22px; font-weight: 650; }
+      .name { font-size: 19px; font-weight: 650; }
+      .body { font-size: 16px; fill: #3e555b; }
+      .field { font-size: 15px; font-family: Menlo, Consolas, monospace; fill: #26434a; }
+      .kicker { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; fill: #376367; }
+      .label { font-size: 15px; fill: #39585b; }
+      .node { fill: #fff; stroke: #a9bab8; stroke-width: 1.4; }
+      .main-node { fill: #e0efea; stroke: #679487; stroke-width: 1.5; }
+      .edge { fill: none; stroke: #426061; stroke-width: 2; marker-end: url(#arrow); }
+      .rule { stroke: #c7d3cf; stroke-width: 1; }
+    </style>
+  </defs>
+  <rect width="960" height="1090" rx="14" fill="#f7f8f4"/>
+  <text x="38" y="39" class="kicker">XDJ-AZ  /  COMMUNITY MODS</text>
+  <text x="38" y="82" class="title">AZ-MODS SDK architecture</text>
+  <text x="38" y="127" class="section">01   Build and install</text>
+  <g aria-label="The mod build pipeline">
+    <rect x="38" y="151" width="244" height="92" rx="8" class="node"/>
+    <text x="56" y="182" class="name">Mod project</text>
+    <text x="56" y="208" class="body">C or C++ and azmod.json</text>
+    <text x="56" y="229" class="field">#include "azmod-mod.h"</text>
+    <path d="M282 198H348" class="edge"/>
+    <rect x="351" y="151" width="251" height="92" rx="8" class="node"/>
+    <text x="369" y="182" class="name">azmod-pack build</text>
+    <text x="369" y="208" class="body">Pinned ARM64 container</text>
+    <text x="369" y="229" class="body">Build and validate &lt;id&gt;.so</text>
+    <path d="M602 198H672" class="edge"/>
+    <rect x="675" y="151" width="247" height="92" rx="8" class="node"/>
+    <text x="693" y="182" class="name">azmod-pack package</text>
+    <text x="693" y="208" class="body">Library, manifest and icon</text>
+    <text x="693" y="229" class="body">in a .azmod archive</text>
+    <path d="M160 243V278" class="edge"/>
+    <path d="M798 243V278" class="edge"/>
+    <rect x="38" y="281" width="403" height="79" rx="8" fill="#edf1ee" stroke="#b5c3bd"/>
+    <text x="56" y="310" class="name">Host harness</text>
+    <text x="56" y="337" class="body">Loads a host build against a synthetic core</text>
+    <rect x="510" y="281" width="412" height="79" rx="8" class="node"/>
+    <text x="528" y="310" class="name">Install and approve</text>
+    <text x="528" y="337" class="body">USB or published repository • approve the .so hash</text>
+  </g>
+  <rect x="22" y="394" width="916" height="675" rx="12" fill="#f1f5f1" stroke="#90a8a0" stroke-width="1.5"/>
+  <text x="46" y="434" class="section">02   Run inside EP147</text>
+  <text x="299" y="434" class="body">One process on the deck or emulator</text>
+  <path d="M798 360V462" class="edge"/>
+  <g aria-label="The mod and core call across ABI version 1 in opposite directions">
+    <rect x="46" y="465" width="269" height="105" rx="8" class="main-node"/>
+    <text x="64" y="496" class="name">Loaded mod</text>
+    <text x="64" y="523" class="field">az_mod_v1_entry()</text>
+    <text x="64" y="547" class="body">Returns its az_mod_v1 descriptor</text>
+    <rect x="645" y="465" width="269" height="105" rx="8" class="main-node"/>
+    <text x="663" y="496" class="name">AZ-MODS core</text>
+    <text x="663" y="523" class="field">az_core_v1</text>
+    <text x="663" y="547" class="body">Loads mods and owns services</text>
+    <text x="480" y="486" text-anchor="middle" class="label">Calls entry, init(core), then callbacks</text>
+    <path d="M645 499H318" class="edge"/>
+    <text x="480" y="533" text-anchor="middle" class="label">Calls functions in the service table</text>
+    <path d="M315 546H642" class="edge"/>
+  </g>
+  <g aria-label="Execution contexts and core services">
+    <path d="M56 570V599 M655 570V599" class="rule"/>
+    <text x="46" y="623" class="kicker">WHERE MOD CODE RUNS</text>
+    <text x="493" y="623" class="kicker">WHAT THE CORE PROVIDES</text>
+    <line x1="464" y1="610" x2="464" y2="840" class="rule"/>
+    <text x="46" y="659" class="name">UI thread</text>
+    <text x="46" y="682" class="body">tick, page and surface callbacks, deck events</text>
+    <text x="46" y="711" class="name">Controller I/O</text>
+    <text x="46" y="734" class="body">on_frame for ERP LEDs • frame and touch filters</text>
+    <text x="46" y="763" class="name">Audio tap thread</text>
+    <text x="46" y="786" class="body">Read-only deck audio before the hardware mixer</text>
+    <text x="46" y="815" class="name">Mod worker</text>
+    <text x="46" y="838" class="body">thread_start for disk access and longer work</text>
+    <text x="493" y="659" class="name">Menu and display</text>
+    <text x="493" y="682" class="body">Rows, pages, surfaces, drawing and X windows</text>
+    <text x="493" y="711" class="name">Deck, panel and audio</text>
+    <text x="493" y="734" class="body">Deck state, beat phase, events, filters and audio taps</text>
+    <text x="493" y="763" class="name">Storage and system</text>
+    <text x="493" y="786" class="body">Settings, logs, USB folders, library and child programs</text>
+    <text x="493" y="815" class="name">Firmware hooks</text>
+    <text x="493" y="838" class="body">claim_hook and claim_vslot require an exact build tag</text>
+  </g>
+  <g aria-label="The optional shared core library service">
+    <rect x="46" y="872" width="868" height="173" rx="8" fill="#fbf4e5" stroke="#b99859" stroke-width="1.4"/>
+    <path d="M914 523H926V855H779V869" class="edge"/>
+    <text x="64" y="902" class="kicker" style="fill:#765622">DEVELOPMENT  /  OPT-IN</text>
+    <text x="64" y="934" class="section">library_service(1)</text>
+    <text x="273" y="934" class="body">One core-owned az_library_v1 table shared by mods</text>
+    <line x1="64" y1="950" x2="896" y2="950" stroke="#cec2a7"/>
+    <text x="64" y="978" class="name">Stored USB data</text>
+    <text x="64" y="1002" class="field">track_* / waveform_*</text>
+    <text x="64" y="1026" class="body">Tickets pin immutable snapshots</text>
+    <text x="361" y="978" class="name">Live native state</text>
+    <text x="361" y="1002" class="field">deck_snapshot / native_cues</text>
+    <text x="361" y="1026" class="body">Check validity and revision</text>
+    <text x="655" y="978" class="name">Cue and loop commands</text>
+    <text x="655" y="1002" class="field">command_submit</text>
+    <text x="655" y="1026" class="body">Poll until the outcome is final</text>
+  </g>
+</svg>

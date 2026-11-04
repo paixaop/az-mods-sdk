@@ -7,7 +7,10 @@
 #include <string.h>
 #include <time.h>
 
-enum { CAPTURE_SLOTS = 128, CAPTURE_LIMIT = 512, COUNTER_TRIES = 16, READ_TRIES = 3 };
+enum { CAPTURE_SLOTS = 128,
+       CAPTURE_LIMIT = 512,
+       COUNTER_TRIES = 16,
+       READ_TRIES = 3 };
 struct capture_slot {
     _Atomic uint64_t stamp, observed_ns;
     _Atomic uintptr_t receiver, caller;
@@ -23,7 +26,8 @@ static uint64_t last_ns; /* touched only while holding the nonblocking writer ga
  * This module neither installs an entry nor clears/replaces that original. */
 void *azsdk_cache_entry_originals[AZCE_KIND_COUNT];
 
-static void count_loss(_Atomic uint64_t *counter) {
+static void count_loss(_Atomic uint64_t *counter)
+{
     uint64_t value = atomic_load_explicit(counter, memory_order_relaxed);
     for (unsigned attempt = 0; attempt < COUNTER_TRIES && value != UINT64_MAX; ++attempt)
         if (atomic_compare_exchange_weak_explicit(counter, &value, value + 1,
@@ -32,7 +36,8 @@ static void count_loss(_Atomic uint64_t *counter) {
      * can undercount losses; saved remains exact under the writer gate. */
 }
 
-int slip_capture_arm(uintptr_t exact_caller_pc) {
+int slip_capture_arm(uintptr_t exact_caller_pc)
+{
     if (!exact_caller_pc) return 0;
     uintptr_t empty = 0;
     return atomic_compare_exchange_strong_explicit(&armed_caller, &empty, exact_caller_pc,
@@ -45,20 +50,22 @@ extern int slip_capture_test_clock_gettime(clockid_t, struct timespec *);
 #else
 #define capture_clock clock_gettime
 #endif
-static int capture_time(uint64_t *out) {
+static int capture_time(uint64_t *out)
+{
     struct timespec now;
     if (capture_clock(CLOCK_MONOTONIC, &now) || now.tv_sec < 0 || now.tv_nsec < 0 ||
         now.tv_nsec >= 1000000000L) return 0;
-    uint64_t seconds = (uint64_t) now.tv_sec, nanos = (uint64_t) now.tv_nsec;
+    uint64_t seconds = (uint64_t)now.tv_sec, nanos = (uint64_t)now.tv_nsec;
     if (seconds > UINT64_MAX / UINT64_C(1000000000)) return 0;
     uint64_t base = seconds * UINT64_C(1000000000);
     if (nanos > UINT64_MAX - base) return 0;
     *out = base + nanos;
-    return *out && compare_timestamps(*out,last_ns,1000000000,1000000000,1) >= AZ_TIME_EQUAL;
+    return *out && compare_timestamps(*out, last_ns, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL;
 }
 #undef capture_clock
 
-static void capture_frame(const struct azce_call *call) {
+static void capture_frame(const struct azce_call *call)
+{
     uintptr_t expected_caller = atomic_load_explicit(&armed_caller, memory_order_acquire);
     if (!call || !expected_caller || call->kind != AZCE_KIND_MESSAGE || call->reserved || call->caller_reserved ||
         call->caller_link != expected_caller) {
@@ -84,16 +91,17 @@ static void capture_frame(const struct azce_call *call) {
      * No sequence ABA is possible within the fixed512-record lifetime. */
     atomic_store(&slot->stamp, sequence * 2 + 1);
     atomic_store(&slot->observed_ns, ns);
-    atomic_store(&slot->receiver, (uintptr_t) call->args[0]);
-    atomic_store(&slot->caller, (uintptr_t) call->caller_link);
-    atomic_store(&slot->raw, (uint32_t) call->args[1]);
+    atomic_store(&slot->receiver, (uintptr_t)call->args[0]);
+    atomic_store(&slot->caller, (uintptr_t)call->caller_link);
+    atomic_store(&slot->raw, (uint32_t)call->args[1]);
     atomic_store(&slot->stamp, sequence * 2);
     last_ns = ns;
     atomic_store(&saved, sequence);
     atomic_store_explicit(&writer, 0u, memory_order_release);
 }
 
-void azsdk_cache_dispatch_call(struct azce_call *call) {
+void azsdk_cache_dispatch_call(struct azce_call *call)
+{
     int incoming_errno = errno;
     capture_frame(call);
     errno = incoming_errno;
@@ -102,7 +110,8 @@ void azsdk_cache_dispatch_call(struct azce_call *call) {
     if (call) azsdk_cache_invoke_original(call);
 }
 
-int slip_capture_read(uint64_t sequence, struct slip_capture_record *out) {
+int slip_capture_read(uint64_t sequence, struct slip_capture_record *out)
+{
     if (!out || !sequence || sequence > CAPTURE_LIMIT) return 0;
     const struct capture_slot *slot = &records[(sequence - 1) % CAPTURE_SLOTS];
     for (unsigned attempt = 0; attempt < READ_TRIES; ++attempt) {
@@ -120,7 +129,8 @@ int slip_capture_read(uint64_t sequence, struct slip_capture_record *out) {
     return 0;
 }
 
-void slip_capture_get_stats(struct slip_capture_stats *out) {
+void slip_capture_get_stats(struct slip_capture_stats *out)
+{
     if (!out) return;
     const struct slip_capture_stats value = {
         atomic_load(&saved), atomic_load(&dropped), atomic_load(&rejected)

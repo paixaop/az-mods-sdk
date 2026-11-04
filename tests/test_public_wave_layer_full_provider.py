@@ -18,7 +18,7 @@ CORE=pathlib.Path(os.environ.get('AZ_CORE_TEST_ROOT',ROOT.parent/'xdj-az-mods'))
 class FullProvider(unittest.TestCase):
     def build_run(self,sanitizer=False):
         if sys.platform!='linux':self.skipTest('full disk provider requires Linux; run this test in the Linux SDK runtime')
-        compiler=os.environ.get('HOST_CC') or ('clang' if sanitizer and shutil.which('clang') else 'cc')
+        compiler=os.environ.get('HOST_CC') or ('clang' if shutil.which('clang') else 'cc')
         cc=shutil.which(compiler)
         if not cc:self.skipTest('host C compiler unavailable')
         unit=CORE/'tests/unit/sdktrack_test.c'
@@ -37,7 +37,7 @@ class FullProvider(unittest.TestCase):
             link=['-Wl,-export_dynamic'] if sys.platform=='darwin' else ['-rdynamic','-ldl']
             flags=['-fsanitize=address,undefined','-fno-sanitize-recover=all'] if sanitizer else []
             argv=[cc,'-std=gnu11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-missing-field-initializers',*flags,
-                  '-I'+str(CORE/'src/azmod'),'-I'+str(CORE/'tests/unit'),
+                  '-I'+str(CORE/'src/azmod'),'-I'+str(CORE/'tests/unit'),'-I'+str(ROOT/'include'),
                   '-DLIB_INC="'+str((CORE/'src/azmod/sdk_lib.c').resolve())+'"',
                   '-DPUBLIC_WAVE_PROBE_IMPL="'+str(probe.resolve())+'"',str(source),'-pthread','-lm','-lsqlite3',*link,'-o',str(binary)]
             built=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=60)

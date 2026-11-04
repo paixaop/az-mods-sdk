@@ -6,42 +6,47 @@
 #include <float.h>
 static void timing_precision(void)
 {
-    az_beat beats[] = {{0,120,1,0},{.5,120,2,0},{1.5,60,3,0}};
-    az_track_snapshot s = {.size=sizeof s, .version=AZ_DATA_VERSION, .beat_count=3, .beats=beats};
+    az_beat beats[] = { { 0, 120, 1, 0 }, { .5, 120, 2, 0 }, { 1.5, 60, 3, 0 } };
+    az_track_snapshot s = { .size = sizeof s, .version = AZ_DATA_VERSION, .beat_count = 3, .beats = beats };
     s.grid_info.availability = AZ_AVAIL_READY;
-    double out=123;
-    double source=81673.0/44100;
-    beats[2].time_s=source;
+    double out = 123;
+    double source = 81673.0 / 44100;
+    beats[2].time_s = source;
     assert(ht_beat_to_time(&s, 1.25, &out) == AZ_OK);
-    double back=0;
-    assert(ht_time_to_beat(&s, out, &back) == AZ_OK && fabs(back-1.25)<1e-15);
-    assert(ht_beat_to_time(&s, 2, &out) == AZ_OK && compare_timestamps(out,source,1,1000,1)==AZ_TIME_EQUAL);
-    const double invalid[] = {NAN, INFINITY, -INFINITY};
-    for (unsigned i=0; i<3; i++) for (unsigned j=0; j<3; j++) {
-        beats[0].time_s=0; beats[1].time_s=.5; beats[2].time_s=1.5;
-        beats[i].time_s=invalid[j];
-        out=123;
-        assert(ht_beat_to_time(&s, i==2 ? 2 : i+.25, &out)==AZ_FAILED && out==123);
-    }
-    beats[0].time_s=0; beats[1].time_s=.5; beats[2].time_s=INFINITY;
-    out=123;
-    assert(ht_time_to_beat(&s, .25, &out)==AZ_FAILED && out==123);
-    beats[2].time_s=.5;
-    assert(ht_beat_to_time(&s, 1.5, &out)==AZ_FAILED && out==123);
-    beats[2].time_s=.25;
-    assert(ht_beat_to_time(&s, 1.5, &out)==AZ_FAILED && out==123);
-    beats[2].time_s=1.5;
-    assert(ht_time_to_beat(&s,1.5005,&out)==AZ_OK && out==2);
-    assert(ht_time_to_beat(&s,1.5015,&out)==AZ_NOT_FOUND);
-    az_time_interval duration = {.size=sizeof duration};
-    assert(ht_interval(&s,1.,.9995,1.,&duration)==AZ_OK);
-    assert(compare_timestamps(duration.source_s,0.,1,1000,1)==AZ_TIME_EQUAL);
-    assert(ht_interval(&s,1.,.9985,1.,&duration)==AZ_INVALID);
-    assert(ht_interval(NULL, 0, DBL_MIN, DBL_MAX, &duration)==AZ_OK);
-    assert(compare_timestamps(duration.source_s,0.,1,1000,1)==AZ_TIME_EQUAL && (duration.valid & AZ_INTERVAL_PLAYBACK));
-    assert(compare_timestamps(duration.playback_s,0.,1,1000,1)==AZ_TIME_EQUAL && duration.playback_rate==DBL_MAX);
-    assert(ht_interval(NULL, 0, 0, DBL_MAX, &duration)==AZ_OK);
-    assert((duration.valid & AZ_INTERVAL_PLAYBACK) && compare_timestamps(duration.playback_s,0.,1,1000,1)==AZ_TIME_EQUAL);
+    double back = 0;
+    assert(ht_time_to_beat(&s, out, &back) == AZ_OK && fabs(back - 1.25) < 1e-15);
+    assert(ht_beat_to_time(&s, 2, &out) == AZ_OK && compare_timestamps(out, source, 1, 1000, 1) == AZ_TIME_EQUAL);
+    const double invalid[] = { NAN, INFINITY, -INFINITY };
+    for (unsigned i = 0; i < 3; i++)
+        for (unsigned j = 0; j < 3; j++) {
+            beats[0].time_s = 0;
+            beats[1].time_s = .5;
+            beats[2].time_s = 1.5;
+            beats[i].time_s = invalid[j];
+            out = 123;
+            assert(ht_beat_to_time(&s, i == 2 ? 2 : i + .25, &out) == AZ_FAILED && out == 123);
+        }
+    beats[0].time_s = 0;
+    beats[1].time_s = .5;
+    beats[2].time_s = INFINITY;
+    out = 123;
+    assert(ht_time_to_beat(&s, .25, &out) == AZ_FAILED && out == 123);
+    beats[2].time_s = .5;
+    assert(ht_beat_to_time(&s, 1.5, &out) == AZ_FAILED && out == 123);
+    beats[2].time_s = .25;
+    assert(ht_beat_to_time(&s, 1.5, &out) == AZ_FAILED && out == 123);
+    beats[2].time_s = 1.5;
+    assert(ht_time_to_beat(&s, 1.5005, &out) == AZ_OK && out == 2);
+    assert(ht_time_to_beat(&s, 1.5015, &out) == AZ_NOT_FOUND);
+    az_time_interval duration = { .size = sizeof duration };
+    assert(ht_interval(&s, 1., .9995, 1., &duration) == AZ_OK);
+    assert(compare_timestamps(duration.source_s, 0., 1, 1000, 1) == AZ_TIME_EQUAL);
+    assert(ht_interval(&s, 1., .9985, 1., &duration) == AZ_INVALID);
+    assert(ht_interval(NULL, 0, DBL_MIN, DBL_MAX, &duration) == AZ_OK);
+    assert(compare_timestamps(duration.source_s, 0., 1, 1000, 1) == AZ_TIME_EQUAL && (duration.valid & AZ_INTERVAL_PLAYBACK));
+    assert(compare_timestamps(duration.playback_s, 0., 1, 1000, 1) == AZ_TIME_EQUAL && duration.playback_rate == DBL_MAX);
+    assert(ht_interval(NULL, 0, 0, DBL_MAX, &duration) == AZ_OK);
+    assert((duration.valid & AZ_INTERVAL_PLAYBACK) && compare_timestamps(duration.playback_s, 0., 1, 1000, 1) == AZ_TIME_EQUAL);
 }
 static void invalid_envelopes(const az_library_v1 *library, const az_track_ref *ref)
 {
@@ -115,18 +120,22 @@ static void native_command_envelopes(const az_library_v1 *library)
     for (unsigned deck = 0; deck < 4; ++deck) {
         for (unsigned operation = AZ_CMD_LOOP_IN; operation <= AZ_CMD_CUE_COLOR; ++operation) {
             az_command_request request = {
-                .size = sizeof request, .version = AZ_DATA_VERSION,
-                .operation = operation, .deck = deck, .request_id = 100 + operation,
-                .expected_load_generation = 1, .deadline_ns = 1,
+                .size = sizeof request,
+                .version = AZ_DATA_VERSION,
+                .operation = operation,
+                .deck = deck,
+                .request_id = 100 + operation,
+                .expected_load_generation = 1,
+                .deadline_ns = 1,
                 .flags = AZ_COMMAND_NATIVE_LOAD,
             };
             const int selected = operation == AZ_CMD_SAVED_RECALL || operation == AZ_CMD_SAVED_DELETE ||
-                operation == AZ_CMD_SAVED_AUTO || operation == AZ_CMD_MEMORY_RECALL ||
-                operation == AZ_CMD_MEMORY_DELETE || operation == AZ_CMD_CUE_COMMENT || operation == AZ_CMD_CUE_COLOR;
+                                 operation == AZ_CMD_SAVED_AUTO || operation == AZ_CMD_MEMORY_RECALL ||
+                                 operation == AZ_CMD_MEMORY_DELETE || operation == AZ_CMD_CUE_COMMENT || operation == AZ_CMD_CUE_COLOR;
             const int persistent = operation == AZ_CMD_SAVED_SAVE || operation == AZ_CMD_SAVED_DELETE ||
-                operation == AZ_CMD_SAVED_AUTO || operation == AZ_CMD_HOT_SET || operation == AZ_CMD_HOT_CLEAR ||
-                operation == AZ_CMD_MEMORY_SET || operation == AZ_CMD_MEMORY_DELETE ||
-                operation == AZ_CMD_CUE_COMMENT || operation == AZ_CMD_CUE_COLOR;
+                                   operation == AZ_CMD_SAVED_AUTO || operation == AZ_CMD_HOT_SET || operation == AZ_CMD_HOT_CLEAR ||
+                                   operation == AZ_CMD_MEMORY_SET || operation == AZ_CMD_MEMORY_DELETE ||
+                                   operation == AZ_CMD_CUE_COMMENT || operation == AZ_CMD_CUE_COLOR;
             if (operation > AZ_CMD_LOOP_ADJUST_OUT) request.classification = AZ_CUE_MEMORY;
             if (operation == AZ_CMD_MAIN_SET || operation == AZ_CMD_MAIN_RECALL) request.classification = AZ_CUE_MAIN;
             if (operation == AZ_CMD_HOT_TRIGGER || operation == AZ_CMD_HOT_SET || operation == AZ_CMD_HOT_CLEAR) {
@@ -151,10 +160,16 @@ static void native_command_envelopes(const az_library_v1 *library)
         }
     }
     az_command_request invalid = {
-        .size = sizeof invalid, .version = AZ_DATA_VERSION, .operation = AZ_CMD_SAVED_DELETE,
-        .request_id = 1, .expected_load_generation = 1, .deadline_ns = 1,
-        .expected_revision = 1, .flags = AZ_COMMAND_NATIVE_CUE_IDS | AZ_COMMAND_PERSIST,
-        .classification = AZ_CUE_MEMORY, .entry_id = 1,
+        .size = sizeof invalid,
+        .version = AZ_DATA_VERSION,
+        .operation = AZ_CMD_SAVED_DELETE,
+        .request_id = 1,
+        .expected_load_generation = 1,
+        .deadline_ns = 1,
+        .expected_revision = 1,
+        .flags = AZ_COMMAND_NATIVE_CUE_IDS | AZ_COMMAND_PERSIST,
+        .classification = AZ_CUE_MEMORY,
+        .entry_id = 1,
     };
     az_command_result result = { .size = sizeof result }, before = result;
     assert(library->command_submit("fixture", &invalid, &result) == AZ_INVALID);
@@ -213,12 +228,132 @@ static void short_records(const az_library_v1 *library)
     assert(declared == earlier_size);
     free(earlier);
 }
+static int callback_count;
+static uint64_t callback_ticket;
+static void got_data(const az_data_change *event, void *user)
+{
+    assert(user == &callback_count && ctx == CTX_UI);
+    assert(event->ticket == callback_ticket && event->kind == AZ_CHANGE_TRACK_DATA);
+    assert(!pthread_mutex_trylock(&ht_mu));
+    pthread_mutex_unlock(&ht_mu);
+    if (event->status == AZ_OK) {
+        if (event->fields == AZ_DATA_WAVEFORM) {
+            const az_wave_snapshot *snapshot;
+            assert(HT_LIBRARY.waveform_acquire("fixture", event->ticket, &snapshot) == AZ_OK && snapshot);
+        } else {
+            const az_track_snapshot *snapshot;
+            assert(HT_LIBRARY.track_acquire("fixture", event->ticket, &snapshot) == AZ_OK && snapshot);
+        }
+    } else assert(event->status == AZ_CANCELLED);
+    ++callback_count;
+}
+static void got_command(const az_command_result *result, void *user)
+{
+    (void)result;
+    (void)user;
+    assert(!"unsupported synthetic commands must not produce completion callbacks");
+}
+static void callbacks(const az_library_v1 *library)
+{
+    az_library_v1 old = *library;
+    const az_library_v1 *old_prefix = &old;
+    old.size = offsetof(az_library_v1, on_data_event);
+    assert(!AZ_LIB_HAS(old_prefix, on_data_event) && !AZ_LIB_HAS(old_prefix, on_command_complete));
+    assert(AZ_LIB_HAS(library, on_data_event) && AZ_LIB_HAS(library, on_command_complete));
+    ctx = CTX_NONE;
+    assert(library->on_data_event("fixture", got_data, NULL) == AZ_INVALID);
+    ctx = CTX_INIT;
+    assert(library->on_data_event("fixture", NULL, NULL) == AZ_INVALID);
+    assert(library->on_data_event("fixture", got_data, &callback_count) == AZ_OK);
+    assert(library->on_data_event("fixture", got_data, NULL) == AZ_LIMIT);
+    assert(library->on_command_complete("fixture", got_command, NULL) == AZ_OK);
+    assert(library->on_command_complete("fixture", got_command, NULL) == AZ_LIMIT);
+    static const az_mod_v1 callback_only_mod = { .tick = NULL };
+    mod = &callback_only_mod;
+    ctx = CTX_NONE;
+    az_track_ref r = { sizeof r, 1, 1, 1, 1, 321, 0 };
+    assert(library->track_request("fixture", &r, AZ_DATA_METADATA, &callback_ticket) == AZ_OK);
+    assert(!callback_count); /* Never invoked inline on the request's thread. */
+    call_tick();
+    assert(callback_count == 1);
+    call_tick();
+    assert(callback_count == 1);
+    az_data_change polled = { .size = sizeof polled };
+    assert(library->data_event("fixture", ht_after - 1, &polled) == AZ_OK && polled.ticket == callback_ticket);
+    assert(library->track_release("fixture", callback_ticket) == AZ_OK);
+    az_wave_query q = { sizeof q, 1, AZ_WAVE_PWV3_MONO, 0, 1, 0 };
+    assert(library->waveform_request("fixture", &r, &q, &callback_ticket) == AZ_OK);
+    call_tick();
+    assert(callback_count == 2);
+    assert(library->track_cancel("fixture", callback_ticket) == AZ_OK);
+    call_tick();
+    assert(callback_count == 3);
+    assert(library->track_cancel("fixture", callback_ticket) == AZ_OK);
+    call_tick();
+    assert(callback_count == 3);
+    assert(library->track_release("fixture", callback_ticket) == AZ_OK);
+}
+static void never_complete(const az_command_completion *event, void *user)
+{
+    (void)event;
+    (void)user;
+    assert(!"refused submission has no callback ownership");
+}
+static unsigned initiation_calls;
+static struct {
+    uint64_t id;
+    int status, owned;
+} handoff[2];
+static void initiate(void *user)
+{
+    unsigned at = *(unsigned *)user;
+    ++initiation_calls;
+    az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .request_id = 100 + at, .expected_load_generation = 1, .deadline_ns = 1 };
+    az_command_result result = { .size = sizeof result };
+    handoff[at].status = HT_LIBRARY.command_submit_async("fixture", &request, never_complete, &handoff[at], &result);
+    if (handoff[at].status == AZ_OK) {
+        handoff[at].id = request.request_id;
+        handoff[at].owned = 1;
+    } else assert(handoff[at].status == AZ_UNSUPPORTED && result.request_id == request.request_id && result.outcome == AZ_COMMAND_REJECTED);
+}
+static void noop(void *user) { (void)user; }
+static void asynchronous_boundary(void)
+{
+    Dl_info info;
+    assert(dladdr((void *)never_complete, &info));
+    mod_base = info.dli_fbase;
+    az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .request_id = 99, .expected_load_generation = 1, .deadline_ns = 1 };
+    az_command_result result = { .size = sizeof result }, before = result;
+    ctx = CTX_NONE;
+    assert(HT_LIBRARY.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_INVALID);
+    assert(!memcmp(&before, &result, sizeof result));
+    ctx = CTX_INIT;
+    assert(HT_LIBRARY.command_submit_async("fixture", &request, NULL, NULL, &result) == AZ_INVALID);
+    assert(!memcmp(&before, &result, sizeof result));
+    assert(HT_LIBRARY.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_UNSUPPORTED);
+    assert(result.request_id == 99 && result.outcome == AZ_COMMAND_REJECTED);
+    assert(HT_LIBRARY.command_acknowledge("fixture", 99) == AZ_STALE);
+    assert(HT_LIBRARY.command_acknowledge("fixture", 0) == AZ_INVALID);
+    /* Exercise the actual bounded post_ui queue. A dropped pre-admission job
+     * cannot establish ownership or require a command callback. */
+    ctx = CTX_NONE;
+    for (unsigned i = 0; i < POSTQ; ++i) s_post_ui("fixture", noop, NULL);
+    static unsigned first = 0, second = 1;
+    s_post_ui("fixture", initiate, &first);
+    assert(post_tail - post_head == POSTQ && !handoff[0].owned && !handoff[0].id);
+    drain_post();
+    assert(!initiation_calls);
+    s_post_ui("fixture", initiate, &second);
+    drain_post();
+    assert(initiation_calls == 1 && !handoff[1].owned && !handoff[1].id && handoff[1].status == AZ_UNSUPPORTED);
+}
 int main(void)
 {
     timing_precision();
     mod_id = "fixture";
     thread_lifetime = lifetime;
-    assert(AZ_HAS(&CORE, library_service));
+    const az_core_v1 *core_prefix = &CORE;
+    assert(AZ_HAS(core_prefix, library_service));
     const az_library_v1 *library = CORE.library_service(AZ_LIBRARY_ABI);
     assert(library && library == CORE.library_service(AZ_LIBRARY_ABI));
     short_records(library);
@@ -239,13 +374,15 @@ int main(void)
     assert(library->time_interval(&wrong_version, 0, 1, 1, &checked) == AZ_INVALID);
     assert(library->track_request == CORE.track_request && library->track_release == CORE.track_release);
     az_library_v1 older_library = *library;
+    const az_library_v1 *library_prefix = &older_library;
     older_library.size = offsetof(az_library_v1, waveform_request);
-    assert(AZ_LIB_HAS(&older_library, track_request) && !AZ_LIB_HAS(&older_library, waveform_request));
+    assert(AZ_LIB_HAS(library_prefix, track_request) && !AZ_LIB_HAS(library_prefix, waveform_request));
     older_library.abi++;
-    assert(!AZ_LIB_HAS(&older_library, track_request));
+    assert(!AZ_LIB_HAS(library_prefix, track_request));
     az_core_v1 older_core = CORE;
+    const az_core_v1 *older_prefix = &older_core;
     older_core.size = offsetof(az_core_v1, library_service);
-    assert(!AZ_HAS(&older_core, library_service));
+    assert(!AZ_HAS(older_prefix, library_service));
     az_data_capabilities caps = { .size = sizeof caps };
     assert(ht_caps(&caps) == AZ_OK && caps.stored_components == 31 && caps.commands == 0);
     az_deck_snapshot raw = { .size = sizeof raw };
@@ -278,12 +415,12 @@ int main(void)
     const az_track_snapshot *snapshot;
     assert(ht_acquire("fixture", tickets[0], &snapshot) == AZ_OK && snapshot->cue_count == 2);
     assert(snapshot->track.size == sizeof snapshot->track);
-    assert(compare_timestamps(snapshot->cues[0].start_s,0.,1,1000,1) == AZ_TIME_EQUAL && snapshot->cues[1].type == AZ_CUE_LOOP);
+    assert(compare_timestamps(snapshot->cues[0].start_s, 0., 1, 1000, 1) == AZ_TIME_EQUAL && snapshot->cues[1].type == AZ_CUE_LOOP);
     double beat, time_s;
     assert(ht_time_to_beat(snapshot, 1, &beat) == AZ_OK && beat == 1.5);
-    assert(ht_beat_to_time(snapshot, beat, &time_s) == AZ_OK && compare_timestamps(time_s,1.,1,1000,1) == AZ_TIME_EQUAL);
+    assert(ht_beat_to_time(snapshot, beat, &time_s) == AZ_OK && compare_timestamps(time_s, 1., 1, 1000, 1) == AZ_TIME_EQUAL);
     az_time_interval duration = { .size = sizeof duration };
-    assert(ht_interval(snapshot, .25, 1, 2, &duration) == AZ_OK && duration.beats == 1 && compare_timestamps(duration.playback_s,.375,1,1000,1) == AZ_TIME_EQUAL);
+    assert(ht_interval(snapshot, .25, 1, 2, &duration) == AZ_OK && duration.beats == 1 && compare_timestamps(duration.playback_s, .375, 1, 1000, 1) == AZ_TIME_EQUAL);
     assert(!(duration.valid & AZ_INTERVAL_BARS));
     assert(ht_cancel("fixture", tickets[0]) == AZ_OK);
     assert(ht_acquire("fixture", tickets[0], &snapshot) == AZ_CANCELLED && !snapshot);
@@ -323,7 +460,7 @@ int main(void)
         assert(library->track_release("fixture", extra) == AZ_OK);
     }
     for (uint32_t encoding = 6; encoding <= 7; ++encoding) {
-        query = (az_wave_query){sizeof query, 1, encoding, 50, AZ_WAVE_WINDOW_MAX, 0};
+        query = (az_wave_query){ sizeof query, 1, encoding, 50, AZ_WAVE_WINDOW_MAX, 0 };
         uint32_t total = encoding == 6 ? 100u : 400u;
         assert(library->waveform_request("fixture", &ref, &query, &extra) == AZ_OK);
         assert(library->waveform_acquire("fixture", extra, &wave) == AZ_OK);
@@ -336,5 +473,7 @@ int main(void)
     az_command_request request = { .size = sizeof request, .version = 1, .operation = AZ_CMD_LOOP_EXIT, .request_id = 99, .expected_load_generation = 1, .deadline_ns = 1 };
     az_command_result result = { .size = sizeof result };
     assert(ht_command("fixture", &request, &result) == AZ_UNSUPPORTED && result.request_id == 99 && result.outcome == AZ_COMMAND_REJECTED);
+    callbacks(library);
+    asynchronous_boundary();
     return 0;
 }

@@ -15,7 +15,8 @@ static struct model_state actual_state, public_state;
 static uint64_t actual_load = 42, applied_id, submit_times[32], applied_times[32];
 static unsigned operations[32], call_count, delay_polls, remaining_polls, observer_delay, observer_left, fail_at;
 static int immediate, unexpected_refusal;
-static void apply(const az_command_request *r) {
+static void apply(const az_command_request *r)
+{
     if (applied_id == r->request_id) return;
     applied_id = r->request_id;
     applied_times[call_count - 1] = virtual_now;
@@ -40,7 +41,8 @@ static void apply(const az_command_request *r) {
     observer_left = observer_delay;
     if (!observer_left) public_state = actual_state;
 }
-static int batch_snapshot(int deck, az_deck_snapshot *out) {
+static int batch_snapshot(int deck, az_deck_snapshot *out)
+{
     if (observer_left && !--observer_left) {
         public_state = actual_state;
         public_state.stamp = virtual_now;
@@ -48,11 +50,13 @@ static int batch_snapshot(int deck, az_deck_snapshot *out) {
     memset(out, 0, sizeof *out);
     out->size = sizeof *out;
     out->version = 1;
-    out->deck = (unsigned) deck;
+    out->deck = (unsigned)deck;
     out->valid = AZ_LIVE_NATIVE_LOAD | AZ_LIVE_LOOP_ENGAGED | (public_state.engaged ? AZ_LIVE_LOOP_BOUNDS : 0);
     out->native_load_generation = actual_load;
     out->native_load_unit_generation = 11;
     out->native_load_observed_ns = virtual_now;
+    out->loop.size = sizeof out->loop;
+    out->loop.version = AZ_DATA_VERSION;
     out->loop.valid = AZ_LOOP_ENGAGED | (public_state.engaged ? AZ_LOOP_BOUNDS : 0);
     out->loop.engaged = public_state.engaged;
     out->loop.in_s = public_state.in;
@@ -62,11 +66,14 @@ static int batch_snapshot(int deck, az_deck_snapshot *out) {
     out->loop_observed_ns = public_state.stamp;
     return AZ_OK;
 }
-static int batch_submit(const char *id, const az_command_request *r, az_command_result *out) {
+static int batch_submit(const char *id, const az_command_request *r, az_command_completion_fn fn, void *user, az_command_result *out)
+{
     assert(!strcmp(id, ID) && r->flags == AZ_COMMAND_NATIVE_LOAD && r->quantization == AZ_QUANTIZE_NATIVE);
     assert(call_count < 32 && r->deadline_ns == virtual_now + UINT64_C(10000000000));
     assert(!r->expected_revision && !r->classification && !r->entry_id && !r->rgb && !r->comment[0]);
     submitted = *r;
+    completed = fn;
+    completed_user = user;
     submit_times[call_count] = virtual_now;
     operations[call_count++] = r->operation;
     if (r->operation == AZ_CMD_LOOP_LENGTH) assert(r->beats == 8);
@@ -85,63 +92,77 @@ static int batch_submit(const char *id, const az_command_request *r, az_command_
     } else result(out, r->request_id, AZ_COMMAND_ACCEPTED);
     return AZ_OK;
 }
-static int batch_poll(const char *id, uint64_t rid, az_command_result *out) {
-    assert(!strcmp(id, ID) && rid == submitted.request_id);
+static void batch_complete(void)
+{
+    if (!probe.pending) return;
+    if (probe.terminal) {
+        fixture_advance();
+        return;
+    }
+    if (remaining_polls) {
+        --remaining_polls;
+        return;
+    }
     int outcome = terminal_outcome;
-    if (virtual_now >= submitted.deadline_ns) outcome = AZ_COMMAND_UNCERTAIN;
-    else if (remaining_polls) {
-        remaining_polls--;
-        outcome = AZ_COMMAND_ACCEPTED;
-    } else if (fail_at && call_count == fail_at) outcome = AZ_COMMAND_UNCERTAIN;
+    if (virtual_now >= submitted.deadline_ns || (fail_at && call_count == fail_at)) outcome = AZ_COMMAND_UNCERTAIN;
     if (outcome == AZ_COMMAND_APPLIED) apply(&submitted);
-    result(out, rid, outcome);
-    return AZ_OK;
+    az_command_completion c = { .size = sizeof c, .version = AZ_DATA_VERSION, .kind = AZ_COMMAND_COMPLETION_TERMINAL, .settled = 1 };
+    result(&c.result, submitted.request_id, outcome);
+    terminal_record = c.result;
+    completed(&c, completed_user);
 }
-static void tick(void) {
+static void tick(void)
+{
     virtual_now += UINT64_C(250000000);
-    probe_poll();
+    batch_complete();
     probe_plan_step();
+    probe_flush();
 }
-static void settle_plan(void) {
+static void settle_plan(void)
+{
     for (unsigned i = 0; i < 800 && (probe.plan.kind || probe.pending); i++) tick();
     assert(!probe.plan.kind && !probe.pending);
 }
-static struct probe_input plan_input(const char *kind, uint64_t first) {
-    struct probe_input v = {.pid = (uint64_t) getpid(), .id = first, .load = !strcmp(kind, "refusals") ? UINT64_MAX : 42, .deadline = virtual_now + UINT64_C(10000000000), .deck = 2};
+static struct probe_input plan_input(const char *kind, uint64_t first)
+{
+    struct probe_input v = { .pid = (uint64_t)getpid(), .id = first, .load = !strcmp(kind, "refusals") ? UINT64_MAX : 42, .deadline = virtual_now + UINT64_C(10000000000), .deck = 2 };
     strcpy(v.action, kind);
     return v;
 }
-static void begin_case(void) {
+static void begin_case(void)
+{
     strcpy(directory, "/tmp/sdk-loop-batch.XXXXXX");
     assert(mkdtemp(directory));
     reset();
-    library.command_submit = batch_submit;
-    library.command_poll = batch_poll;
+    library.command_submit_async = batch_submit;
     library.deck_snapshot = batch_snapshot;
     actual_load = 42;
     applied_id = 0;
     call_count = 0;
     delay_polls = remaining_polls = observer_delay = observer_left = fail_at = 0;
     immediate = unexpected_refusal = 0;
-    actual_state = (struct model_state) {1, 1, 3, 1, virtual_now};
+    actual_state = (struct model_state){ 1, 1, 3, 1, virtual_now };
     public_state = actual_state;
     memset(operations, 0, sizeof operations);
     memset(submit_times, 0, sizeof submit_times);
     memset(applied_times, 0, sizeof applied_times);
 }
-static void end_case(void) {
+static void end_case(void)
+{
     char path[1100];
-    snprintf(path, sizeof path, "%s/results.%ld.log", directory, (long) getpid());
+    snprintf(path, sizeof path, "%s/results.%ld.log", directory, (long)getpid());
     assert(!unlink(path));
     assert(!rmdir(directory));
 }
-static void done_status(const char *status, unsigned completed) {
+static void done_status(const char *status, unsigned completed)
+{
     char expected[96];
     snprintf(expected, sizeof expected, "status=%s completed=%u", status, completed);
     assert(strstr(last_log, "SDK_LOOP_PLAN v=1 event=done") && strstr(last_log, expected));
 }
-int main(void) {
-    static const unsigned matrix[15] = {4, 1, 2, 7, 8, 9, 11, 12, 10, 4, 5, 4, 3, 4, 6};
+int main(void)
+{
+    static const unsigned matrix[15] = { 4, 1, 2, 7, 8, 9, 11, 12, 10, 4, 5, 4, 3, 4, 6 };
     for (unsigned deferred = 0; deferred < 2; deferred++) {
         begin_case();
         immediate = !deferred;
@@ -149,7 +170,7 @@ int main(void) {
         observer_delay = deferred ? 6 : 0;
         struct probe_input v = plan_input("matrix", 20);
         assert(probe_handle(&v) == AZ_OK && !call_count);
-        struct probe_input snapshot_input = {.pid = (uint64_t) getpid(), .deck = 2};
+        struct probe_input snapshot_input = { .pid = (uint64_t)getpid(), .deck = 2 };
         strcpy(snapshot_input.action, "snapshot");
         assert(probe_handle(&snapshot_input) == AZ_OK);
         struct probe_input ordinary = input(100);
@@ -201,7 +222,7 @@ int main(void) {
     assert(probe_handle(&v) == AZ_OK);
     tick();
     assert(probe.pending);
-    struct probe_input c = {.pid = (uint64_t) getpid(), .id = 160, .deck = 2};
+    struct probe_input c = { .pid = (uint64_t)getpid(), .id = 160, .deck = 2 };
     strcpy(c.action, "cancel");
     assert(probe_handle(&c) == AZ_OK);
     settle_plan();

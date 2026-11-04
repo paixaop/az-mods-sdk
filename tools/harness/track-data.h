@@ -19,10 +19,50 @@ static uint64_t ht_next;
 static struct {
     uint64_t ticket;
     int cancelled, detail;
+    uint32_t mask;
     az_track_snapshot value;
     az_wave_snapshot wave;
     uint8_t columns[AZ_WAVE_WINDOW_MAX * 6];
 } ht_slots[4];
+/* The harness delivers synthetic data changes with the same bounded UI cadence. */
+#define HT_EVENTS 64
+static az_data_change ht_events[HT_EVENTS];
+static uint64_t ht_sequence, ht_after;
+static void (*ht_data_fn)(const az_data_change *, void *);
+static void (*ht_command_fn)(const az_command_result *, void *);
+static void *ht_data_user, *ht_command_user;
+static void ht_publish(int slot)
+{
+    uint64_t sequence = ++ht_sequence;
+    az_data_change *ev = &ht_events[(sequence - 1) % HT_EVENTS];
+    *ev = (az_data_change){.size = sizeof *ev, .version = AZ_DATA_VERSION,
+        .kind = AZ_CHANGE_TRACK_DATA, .ticket = ht_slots[slot].ticket,
+        .sequence = sequence, .observed_ns = 1,
+        .track = ht_slots[slot].detail ? ht_slots[slot].wave.track : ht_slots[slot].value.track,
+        .fields = ht_slots[slot].detail ? AZ_DATA_WAVEFORM : ht_slots[slot].mask,
+        .revision = 1, .status = ht_slots[slot].cancelled ? AZ_CANCELLED : AZ_OK};
+}
+static int ht_on_data_event(const char *id, void (*fn)(const az_data_change *, void *), void *user)
+{
+    check_id(id, "on_data_event");
+    if (ctx != CTX_INIT || !fn) return AZ_INVALID;
+    if (ht_data_fn) return AZ_LIMIT;
+    if (pthread_mutex_trylock(&ht_mu)) return AZ_BUSY;
+    ht_after = ht_sequence;
+    pthread_mutex_unlock(&ht_mu);
+    ht_data_fn = fn;
+    ht_data_user = user;
+    return AZ_OK;
+}
+static int ht_on_command_complete(const char *id, void (*fn)(const az_command_result *, void *), void *user)
+{
+    check_id(id, "on_command_complete");
+    if (ctx != CTX_INIT || !fn) return AZ_INVALID;
+    if (ht_command_fn) return AZ_LIMIT;
+    ht_command_fn = fn;
+    ht_command_user = user;
+    return AZ_OK;
+}
 static int ht_caps(az_data_capabilities *out)
 {
     if (!out || ht_record_size(out) < sizeof *out) return AZ_INVALID;
@@ -83,6 +123,7 @@ static int ht_request(const char *id, const az_track_ref *ref, uint32_t mask, ui
             v->track = *ref;
             v->track.size = sizeof v->track;
             v->revision = 1;
+            ht_slots[i].mask = mask;
             az_component_info ci = { AZ_AVAIL_READY, AZ_PROV_FILE, 1, 1 };
             if (mask & AZ_DATA_METADATA) {
                 v->metadata_info = ci;
@@ -114,6 +155,7 @@ static int ht_request(const char *id, const az_track_ref *ref, uint32_t mask, ui
             }
             ht_slots[i].cancelled = ht_slots[i].detail = 0;
             *ticket = ht_slots[i].ticket = ++ht_next;
+            ht_publish(i);
             rc = AZ_OK;
             break;
         }
@@ -175,6 +217,7 @@ static int ht_wave_request(const char *id, const az_track_ref *ref, const az_wav
             ht_slots[i].cancelled = 0;
             ht_slots[i].detail = 1;
             *ticket = ht_slots[i].ticket = ++ht_next;
+            ht_publish(i);
             rc = AZ_OK;
             break;
         }
@@ -204,8 +247,10 @@ static int ht_drop(const char *id, uint64_t ticket, int cancel)
     int rc = AZ_STALE;
     for (int i = 0; i < 4; i++)
         if (ht_slots[i].ticket == ticket && ticket) {
-            if (cancel) ht_slots[i].cancelled = 1;
-            else ht_slots[i].ticket = 0;
+            if (cancel && !ht_slots[i].cancelled) {
+                ht_slots[i].cancelled = 1;
+                ht_publish(i);
+            } else if (!cancel) ht_slots[i].ticket = 0;
             rc = AZ_OK;
         }
     pthread_mutex_unlock(&ht_mu);
@@ -216,8 +261,21 @@ static int ht_cancel(const char *id, uint64_t ticket) { return ht_drop(id, ticke
 static int ht_event(const char *id, uint64_t after, az_data_change *out)
 {
     check_id(id, "data_event");
-    (void)after;
-    return !out || ht_record_size(out) < sizeof *out ? AZ_INVALID : AZ_EMPTY;
+    if (!out || ht_record_size(out) < sizeof *out || after == UINT64_MAX) return AZ_INVALID;
+    if (pthread_mutex_trylock(&ht_mu)) return AZ_BUSY;
+    int rc = AZ_EMPTY;
+    uint64_t first = ht_sequence >= HT_EVENTS ? ht_sequence - HT_EVENTS + 1 : 1;
+    if (after > ht_sequence) rc = AZ_INVALID;
+    else if (after < ht_sequence) {
+        uint64_t sequence = after < first ? first : after + 1;
+        uint32_t size = out->size;
+        *out = ht_events[(sequence - 1) % HT_EVENTS];
+        out->size = size;
+        out->missed = after < first - 1;
+        rc = AZ_OK;
+    }
+    pthread_mutex_unlock(&ht_mu);
+    return rc;
 }
 static int ht_command(const char *id, const az_command_request *r, az_command_result *out)
 {
@@ -238,6 +296,25 @@ static int ht_command(const char *id, const az_command_request *r, az_command_re
     memcpy(out, &v, sizeof v);
     return AZ_UNSUPPORTED;
 }
+static int ht_command_submit_async(const char *id, const az_command_request *request,
+                                   az_command_completion_fn callback, void *user,
+                                   az_command_result *out)
+{
+    check_id(id, "command_submit_async");
+    (void)user;
+    Dl_info info;
+    if ((ctx != CTX_INIT && ctx != CTX_UI) || !callback ||
+        !dladdr((void *)callback, &info) || info.dli_fbase != mod_base) return AZ_INVALID;
+    /* Synthetic harness advertises zero command capabilities. A refusal owns
+     * no request and must never schedule either completion notification. */
+    return ht_command(id, request, out);
+}
+static int ht_command_acknowledge(const char *id, uint64_t request_id)
+{
+    check_id(id, "command_acknowledge");
+    if ((ctx != CTX_INIT && ctx != CTX_UI) || !request_id) return AZ_INVALID;
+    return AZ_STALE;
+}
 static int ht_command_poll(const char *id, uint64_t request_id, az_command_result *out)
 {
     check_id(id, "command_poll");
@@ -252,4 +329,19 @@ static int ht_command_release(const char *id, uint64_t request_id)
 {
     check_id(id, "command_release");
     return request_id ? AZ_STALE : AZ_INVALID;
+}
+
+static void ht_callbacks(void)
+{
+    if (!ht_data_fn) return;
+    for (int i = 0; i < 16; ++i) {
+        az_data_change event = {.size = sizeof event};
+        if (ht_event(mod_id, ht_after, &event) != AZ_OK) break;
+        ht_after = event.sequence;
+        ctx = CTX_UI;
+        arm(1);
+        ht_data_fn(&event, ht_data_user);
+        arm(0);
+        ctx = CTX_NONE;
+    }
 }

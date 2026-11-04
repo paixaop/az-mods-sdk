@@ -45,8 +45,9 @@ it is not rekordbox's permanent library UUID. References must not be persisted a
 Duplicate content IDs on different sources are distinct cache keys.
 
 `track_request` queues a component mask and returns a ticket. It does no file I/O. Multiple
-consumers requesting the same reference and mask share one immutable result. Poll
-`track_acquire`; `AZ_PENDING` means loading, `AZ_BUSY` means retry on another tick. `AZ_OK`
+consumers requesting the same reference and mask share one immutable result. Register
+`on_data_event` in `init` to receive completion, then call `track_acquire` for the ticket.
+Alternatively poll `track_acquire`; `AZ_PENDING` means loading, `AZ_BUSY` means retry later. `AZ_OK`
 returns a borrowed immutable pointer. Copy small display values, then release the ticket.
 All nested arrays have that pointer's lifetime. Do not edit them or retain them after release.
 
@@ -368,9 +369,132 @@ correlate results with tickets. Poll from a mod tick or worker and keep the last
 `AZ_EMPTY` means no newer event; `missed=1` means refresh outstanding state. Journal
 sequence exhaustion returns `AZ_LIMIT` after the last available cursor; it never
 wraps or reuses a cursor. Existing tickets remain usable. The journal may
-coalesce history by dropping old entries. There are no callbacks, guaranteed beat events or
-loop-iteration events. Deck observation and command events are reserved in the contract but
-are not emitted yet. Poll deck state directly.
+coalesce history by dropping old entries. There are no guaranteed beat or loop-iteration
+events. Deck observation and command events in this journal are reserved and are not emitted
+yet. Poll deck state directly; command completion has its own callback below.
+
+### Callback delivery
+
+The optional `on_data_event` subscription delivers stored track and waveform events.
+Register it once from initialization and check it with `AZ_LIB_HAS`. Registration returns
+`AZ_INVALID` for an invalid owner, context or callback, `AZ_LIMIT` for a duplicate or
+exhausted journal, and `AZ_BUSY` when the provider lock is contended. A refused registration
+installs no listener. Its borrowed record is valid for the callback duration only.
+
+Callbacks run on the UI thread outside provider locks. Failed initialization and owner
+retirement suppress future invocations. Keep callback work bounded and nonblocking.
+
+`on_data_event` receives the same owner-scoped records as `data_event`, using its own cursor
+starting at registration. `AZ_CHANGE_TRACK_DATA` reports track **and** waveform readiness,
+failure or cancellation; `ticket` correlates the request and `fields` identifies components.
+`AZ_CHANGE_INVALIDATED` reports stale data. A cache hit also produces a completion event.
+For success, call the matching acquire function to borrow the snapshot; the callback itself
+does not acquire or release tickets. Events describe publication history: a ticket may have
+been cancelled, released or invalidated before delivery, so check the acquire status.
+Acquisition/release remain try-lock operations and can return `AZ_BUSY`; defer a contended
+operation rather than blocking the UI. There is no need to repeatedly check `AZ_PENDING`
+while waiting for completion.
+
+Delivery is limited to 16 data records per mod per UI turn (about 30 turns/sec, rate varies).
+Provider lock contention defers delivery to a later turn. The 64-record journal is shared:
+`missed=1` means rebuild state for outstanding tickets, including when other owners overrun
+history. A gap-only record has `kind=0`. Callback and polling cursors are independent;
+calling `data_event` does not consume callback delivery. Sequence exhaustion still requires
+handling `AZ_LIMIT` through the polling API; it cannot wrap into a fresh sequence.
+
+### Asynchronous command ownership
+
+New clients require both appended `command_submit_async` and `command_acknowledge` members,
+plus the operation capability. An older table leaves the action unavailable. There is no
+fallback to command-status polling, the command journal, or legacy release retries.
+The older `command_submit`, `command_poll`, `command_cancel`, `command_release` and
+`on_command_complete` slots remain for binary compatibility; they do not implement the
+new acknowledgement and cleanup contract.
+
+Submit directly from initialization or a UI callback. Authenticate the original mod caller
+at each public service boundary. The callback must be non-null and belong to that mod's
+executable code. Requests and synchronous outputs are copied; they need complete v1 capacity,
+and a larger caller retains its size and unknown tail. Unknown flags, reserved fields,
+non-finite coordinates and unterminated comments are invalid.
+
+An `AZ_OK` return for a new ID establishes ownership of the **submitted** ID even when the
+synchronous reply is malformed. Enter `WAIT_TERMINAL`. An immediate terminal synchronous
+reply also waits for its deferred terminal callback. Never obtain a new ID from an invalid
+reply. `AZ_INVALID` and `AZ_BUSY` preserve output and create no ownership. Other refusal
+codes supply a correlated rejected result and create no callback or acknowledgement duty.
+
+Each accepted asynchronous ID receives two serialized UI notifications outside service
+calls and store locks:
+
+| Notification | Client action |
+| --- | --- |
+| `TERMINAL` | Validate size/version/kind/settled and the complete nested result against the submitted ID. Copy its immutable outcome, reason, revision and producer observation time, then acknowledge once. |
+| `RELEASED` | Require the saved terminal fields and `settled=1`. Cleanup has completed; return to `IDLE`. Context may be discarded after this invocation returns. |
+
+The sequence is `IDLE -> WAIT_TERMINAL -> WAIT_RELEASED -> IDLE`. Applied, rejected and
+cancelled terminal results require `settled=1`. Only uncertainty may carry `settled=0`;
+acknowledge it and wait for native settlement and cleanup without checking status.
+`APPLIED` also requires reason `AZ_OK`, a nonzero confirmation revision and a valid producer
+monotonic observation time. Completion records and their nested results are borrowed.
+Wrong IDs, malformed records, duplicates, out-of-order events and mismatched released
+fields never authorize acknowledgement or reclamation.
+
+Acknowledge from `TERMINAL` is allowed and cannot invoke `RELEASED` recursively. A valid
+terminal acknowledgement returns `AZ_OK`, including repeated calls while the pending
+delivery identity exists. There is no `AZ_BUSY`/`AZ_PENDING` retry cycle. Unexpected statuses
+are protocol errors: retain context and surface the error. Capability loss, hidden pages,
+missing mod ticks and delayed UI repaint cannot revoke accepted delivery obligations.
+Native settlement and native slot reclamation proceed independently of acknowledgement.
+
+Use static/process-lifetime context when retirement could suppress `RELEASED`. Retirement
+closes admission, suppresses callbacks that have not started, and implicitly acknowledges
+retained work. Its internal callback-quiescence barrier is not a public storage-reclamation
+notification. Failed initialization, cancellation and return from `init` do not authorize
+freeing unreleased callback context. Keep that context until process exit when released
+delivery is suppressed.
+
+Equal retries preserve the original callback/user binding and delivery phase. Compare all
+defined request fields exactly, including deadline and finite coordinates; signed zeros are
+equal. Ignore size, padding, unknown tail and bytes following the first comment NUL. Changing
+any defined field, callback, user pointer or submission mode is `AZ_INVALID` with output
+unchanged. Equal retained retries precede current endpoint/load/capability/clock checks and
+cannot execute twice or replay a delivered callback. After acknowledgement, remain in
+`WAIT_RELEASED`, including after the command-store record is reclaimed. An ID becomes stale
+only after released delivery returns. Legacy requests instead retain explicit release.
+
+Worker `post_ui` is only a best-effort request to initiate later. Its void return cannot
+establish admission, refusal, accepted ID ownership or a future command callback. The queue
+can drop a job and report no application-visible result. Keep an unconfirmed scheduling
+context valid for process lifetime. A delivered UI job validates the current target and
+publishes the actual async call result using thread-safe mod state. This milestone supplies
+no reliable worker handoff API. Examples requiring reliable initiation submit directly from
+initialization or UI input; the inspector Control page does this. The file-driven probes
+use best-effort initiation and explicitly retain dropped-job context.
+
+The [inspector Control page](../examples/library-inspector/control.c) demonstrates validation,
+refusal handling, malformed successful replies, one acknowledgement and released cleanup.
+The following helpers are optional and make no service or clock calls:
+
+```c
+#include "azmod-data-helpers.h"
+
+static int inspect_loop(const az_deck_snapshot *snapshot, uint32_t deck, uint64_t now_ns)
+{
+    int engaged = -1;
+    double in_s = 0, out_s = 0;
+    int has_engagement = az_read_loop_engaged(snapshot, deck, now_ns, &engaged);
+    int has_bounds = az_read_loop_bounds(snapshot, deck, now_ns, &in_s, &out_s);
+    /* A zero engagement or IN is valid; failed predicates preserve outputs. */
+    return has_engagement && has_bounds;
+}
+```
+
+Call deck readers only after a successful snapshot read, with a monotonic clock sampled
+afterwards. They check deck/version/capacity, outer and nested validity, stream identity,
+revision and nonzero observation time no later than `now_ns`. They add no age threshold.
+`az_read_native_load_target` returns only the native generation; a USB track reference
+cannot substitute. `az_command_result_matches` validates correlation and known outcome,
+without proving admission, application or completion-envelope validity.
 
 Native cue commands now have development implementations under
 `azmod.native-cue-commands.on`. MAIN_SET/RECALL and HOT_TRIGGER use the native
@@ -417,8 +541,8 @@ this side effect. These are transient native edits, not verified saved-track
 persistence. Native operations can reposition playback.
 
 All operations share per-deck FIFO ordering, load/lifetime checks, deadlines,
-cancellation and correlated Slip/BeatSync/Quantize descendant tracking. Poll
-`command_poll` until terminal, then `command_release`. `ACCEPTED` can span
+cancellation and correlated Slip/BeatSync/Quantize descendant tracking. Use
+`command_submit_async` and acknowledge its validated terminal callback; await `RELEASED`. `ACCEPTED` can span
 processing frames. `APPLIED` requires settled descendants and the operation's
 checked postcondition on the same load; clamped/no-op or partial adjustments
 cannot count as successful exact edits. Its revision is the shared transient
@@ -427,7 +551,7 @@ Cancellation after dispatch cannot undo an audible operation. Firmware/hardware
 acceptance remains pending; static mappings and host fixtures do not establish
 deck execution.
 
-`command_submit` validates reserved bits, finite numbers and terminated comments.
+Both submission modes validate reserved bits, finite numbers and terminated comments.
 Other operations return `AZ_UNSUPPORTED` with a correlated rejected result;
 malformed requests return `AZ_INVALID` with output unchanged. Poll/cancel/release
 authenticate mod ownership and return `AZ_STALE` for unknown requests. A refused
@@ -468,7 +592,7 @@ remaining real saved-memory/native tests; waveform calibration is outside the cu
 ## Timing precision and invalid clocks
 
 Use `compare_timestamps()` from `azmod-timestamps.h` for every timestamp comparison,
-including equality, ordering, ranges and deadlines:
+for observation equality, ordering, ranges and execution deadlines. Retried command payloads instead require exact normalized field equality:
 
 ```c
 #include "azmod-timestamps.h"
@@ -481,7 +605,11 @@ static int same_window(double first, double second, uint64_t units_per_second,
 ```
 
 The function returns `AZ_TIME_BEFORE`, `AZ_TIME_EQUAL`, `AZ_TIME_AFTER`, or
-`AZ_TIME_INVALID` for invalid parameters/non-finite floating timestamps. Equality means
+`AZ_TIME_INVALID` for invalid parameters, non-finite floating timestamps, or a negative
+integral operand when both operands are integral (including mixed signed/unsigned calls).
+Each argument is evaluated once. The full unsigned 64-bit range is preserved. If either
+operand is floating point, signed source coordinates remain valid. Zero is a valid
+comparator input; receipt readers separately reject a missing monotonic timestamp. Equality means
 `abs(second - first) < window_samples / sample_rate` seconds. A difference exactly at
 the window boundary is ordered. Equivalence works across fixed bucket boundaries and
 is symmetric, but is not transitive; do not use it as a sorting predicate.

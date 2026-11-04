@@ -57,10 +57,18 @@ Read a public snapshot without submitting a command:
 v=1 pid=123 action=snapshot id=0 deck=0 op=0 load=0 deadline_ns=0 position=0 end=0 beats=0
 ```
 
-The client polls accepted requests until terminal and then attempts release.
-Busy release is retried. Cancellation after dispatch does not promise rollback.
-It stops after 1800 seconds or 4096 output records; `SDK_LOOP_DONE` states whether
-a request remains pending. A test with a pending request is incomplete.
+The worker asks `post_ui` to initiate each file request. This is best effort:
+a full UI queue may drop the job and report no result. Posting establishes no
+command ownership or callback wait and consumes no accepted ID. The scheduling
+context remains valid for process lifetime when delivery is unconfirmed. A
+delivered UI job validates the current native target and submits directly from
+that UI callback. This milestone has no reliable worker handoff API.
+
+Accepted commands receive `TERMINAL`, acknowledge once on UI, then await
+`RELEASED`. No status queries or release retries drive completion. Cancellation
+after dispatch does not promise rollback. The logging worker stops after 1800
+seconds; display records are bounded at 4096. Accepted callbacks keep their
+process-lifetime context even if logging ends or retirement suppresses release.
 
 ## Receipts
 
@@ -70,7 +78,7 @@ and I/O error messages: its line cap cannot carry the complete receipts. The
 result file is created exclusively with mode0600 at initialization, reopened
 with `O_NOFOLLOW`, checked as a regular file, and capped at2MiB. Existing PID
 files, symlinks and nonregular paths are refused. I/O failure prevents further
-input execution; already accepted work is polled/released where possible.
+input execution; already accepted work continues through completion and cleanup callbacks.
 Read the core log and this result file together for the complete transcript.
 
 Every `SDK_LOOP` record has exactly these fields:
@@ -79,7 +87,7 @@ Every `SDK_LOOP` record has exactly these fields:
 v seq event id deck op target_load rc outcome reason revision receipt_ns query_ns load_valid native_load load_unit load_ns engaged_valid engaged bounds_valid in out loop_unit loop_rev loop_ns
 ```
 
-Events are `submit`, `poll`, `cancel`, `release`, `snapshot` and `refused`.
+Events are `submit`, `terminal`, `acknowledge`, `released`, `cancel`, `snapshot` and `refused`.
 `outcome=-1` means no command result is being reported (for example a snapshot
 or local refusal); it never means accepted. Result receipt clocks come from the
 SDK result, not the observer's query clock. `target_load` remains the submitted

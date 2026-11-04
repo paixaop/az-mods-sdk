@@ -121,10 +121,18 @@ static void tick(void)
         uint32_t index = (uint32_t)cue_cursor + (uint32_t)i;
         if (index >= cue_count) continue;
         const az_cue_entry *c = &s->cues[index];
-        snprintf(lines[i + 3], sizeof lines[i + 3], "%s %u %.3fs%s%.3fs %.28s",
-                 c->classification == AZ_CUE_HOT ? "HOT" : "MEM", c->entry_id, c->start_s,
-                 c->type == AZ_CUE_LOOP ? " loop to " : " point ", c->type == AZ_CUE_LOOP ? c->end_s : c->start_s, c->comment);
-        if (c->valid & AZ_CUE_COLOR) {
+        char start[32] = "unavailable", end[48] = "", color[32] = "";
+        if (c->valid & AZ_CUE_START) snprintf(start, sizeof start, "%.3fs", c->start_s);
+        if (c->type == AZ_CUE_LOOP) {
+            if (c->valid & AZ_CUE_END) snprintf(end, sizeof end, " loop to %.3fs", c->end_s);
+            else snprintf(end, sizeof end, " loop to unavailable");
+        }
+        if (c->classification == AZ_CUE_MEMORY && (c->valid & AZ_CUE_COLOR_ID))
+            snprintf(color, sizeof color, " palette %u", c->color_id);
+        snprintf(lines[i + 3], sizeof lines[i + 3], "%s %u %s%s%s %.28s",
+                 c->classification == AZ_CUE_HOT ? "HOT" : "MEM", c->entry_id, start, end, color,
+                 c->valid & AZ_CUE_COMMENT ? c->comment : "");
+        if (c->classification == AZ_CUE_HOT && (c->valid & AZ_CUE_COLOR)) {
             row_colors[i] = c->rgb;
             row_colored[i] = 1;
         }

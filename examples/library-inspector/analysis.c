@@ -60,7 +60,7 @@ static void *load(void *arg)
     } while (rc == AZ_BUSY);
     if (rc == AZ_OK) atomic_store_explicit(&ready_ticket, t, memory_order_release);
     if (AZ_LIB_HAS(library, waveform_request) && AZ_LIB_HAS(library, waveform_acquire)) {
-        az_wave_query query = {sizeof query, AZ_DATA_VERSION, AZ_WAVE_PWV3_MONO, 0, 4096, 0};
+        az_wave_query query = { sizeof query, AZ_DATA_VERSION, AZ_WAVE_PWV3_MONO, 0, 4096, 0 };
         do {
             rc = library->waveform_request(ID, &ref, &query, &t);
             if (rc == AZ_BUSY) usleep(1000);
@@ -95,19 +95,19 @@ static void tick_track(void)
         if (timing == AZ_OK) snprintf(lines[7], sizeof lines[7], "At 0.25 source seconds: beat %.3f", beat);
     }
     if (!detail_ready) {
-    preview_count = 0;
-    if (s->waveform.sample_count && s->waveform.samples) {
-        preview_count = s->waveform.sample_count < 64 ? s->waveform.sample_count : 64;
-        for (unsigned i = 0; i < preview_count; i++) {
-            uint32_t a = i * s->waveform.sample_count / preview_count;
-            uint32_t b = (i + 1) * s->waveform.sample_count / preview_count;
-            uint8_t peak = 0;
-            for (uint32_t j = a; j < b; j++)
-                if (s->waveform.samples[j] > peak) peak = s->waveform.samples[j];
-            preview[i] = peak;
+        preview_count = 0;
+        if (s->waveform.sample_count && s->waveform.samples) {
+            preview_count = s->waveform.sample_count < 64 ? s->waveform.sample_count : 64;
+            for (unsigned i = 0; i < preview_count; i++) {
+                uint32_t a = i * s->waveform.sample_count / preview_count;
+                uint32_t b = (i + 1) * s->waveform.sample_count / preview_count;
+                uint8_t peak = 0;
+                for (uint32_t j = a; j < b; j++)
+                    if (s->waveform.samples[j] > peak) peak = s->waveform.samples[j];
+                preview[i] = peak;
+            }
+            snprintf(lines[6], sizeof lines[6], "Overview chart: raw PWAV byte values");
         }
-        snprintf(lines[6], sizeof lines[6], "Overview chart: raw PWAV byte values");
-    }
     }
     /* Copy into owned display text, then release the immutable snapshot. */
     if (library->track_release(ID, ticket) == AZ_OK) ticket = 0;
@@ -128,7 +128,8 @@ static void tick(void)
             uint32_t a = i * w->column_count / preview_count;
             uint32_t b = (i + 1) * w->column_count / preview_count;
             uint8_t peak = 0;
-            for (uint32_t j = a; j < b; j++) if ((w->columns[j] & 31) > peak) peak = w->columns[j] & 31;
+            for (uint32_t j = a; j < b; j++)
+                if ((w->columns[j] & 31) > peak) peak = w->columns[j] & 31;
             preview[i] = (uint8_t)(peak * 255u / 31u);
         }
         snprintf(lines[6], sizeof lines[6], "Detail chart: PWV3 height, first %.2f source seconds", w->column_count * w->seconds_per_column);

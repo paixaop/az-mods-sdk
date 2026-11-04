@@ -27,7 +27,7 @@ repository gets the page fixed. For crash-safety rules, see [Guidelines](GUIDELI
 | `on_draw`, `on_input`, `on_enter` | while your page is the active Mod Menu screen | the core's UI thread | `on_draw` well under a frame (a few ms) |
 | `on_frame(bus, frame, len)` | for each control-surface frame | the deck's I/O path | microseconds |
 | frame and touch filters | for each frame or touch report | the deck's I/O path | microseconds; a filter over 200 µs on 8 calls is switched off for the session |
-| row callbacks, surfaces (`on_paint`, `on_input`), `confirm` and `post_ui` callbacks, deck events | when they happen | the core's UI thread | well under 1 ms |
+| row callbacks, surfaces (`on_paint`, `on_input`), `confirm` and `post_ui` callbacks, deck/data events, command completion | when they happen | the core's UI thread | well under 1 ms |
 | audio tap callbacks | for each block of a deck's audio | the core's tap thread (not the audio thread) | under the block's duration |
 | threads you start (`thread_start`) | whenever you like | your own | no limit, but don't make the deck wait |
 | hooks you claim | whenever the deck runs the hooked code | whichever thread the deck uses | as little as possible |
@@ -1104,3 +1104,13 @@ See the [library service contract](13-track-data.md) for development flags, capa
 units, ownership, unavailable native operations and firmware validation limits. The single
 [Core Library Inspector](../examples/library-inspector)
 is a diagnostic client; it contains no native reader or command backend.
+
+### Data and command subscriptions
+
+The optional `az_library_v1.on_data_event` delivers track/waveform completion, cancellation,
+failure and invalidation records on the UI thread. Register once from initialization.
+New command clients require `command_submit_async`, `command_acknowledge` and the operation
+capability. They copy and acknowledge `TERMINAL`, then retain context through `RELEASED`.
+There is no command-status polling fallback or release retry. Check each member with
+`AZ_LIB_HAS`. See [callback delivery](13-track-data.md#callback-delivery) and
+[asynchronous command ownership](13-track-data.md#asynchronous-command-ownership).

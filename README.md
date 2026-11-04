@@ -10,6 +10,9 @@ services: settings and a log, rows and a page in the Mod Menu, deck state and ev
 control buses and the touch screen, surfaces (overlays on EP147's screen), other programs,
 the rekordbox library, and each deck's audio.
 
+The [SDK architecture diagram and function map](docs/architecture.md) traces a mod from its
+source to the running deck and shows which calls cross the mod/core boundary.
+
 The [developer guide](docs/README.md) covers setup on macOS, Windows and Linux, the first
 mod, testing, hooks, publishing and the FAQ. The [Guidelines](docs/GUIDELINES.md) cover
 what keeps a mod stable.

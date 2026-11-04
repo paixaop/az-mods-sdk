@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include "pages.h"
+#include "azmod-data-helpers.h"
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -24,12 +26,29 @@ static void tick(void)
     for (int deck = 0; deck < 4; deck++) {
         az_deck_snapshot s = { 0 };
         s.size = sizeof s;
-        if (library->deck_snapshot(deck, &s) != AZ_OK) continue;
-        snprintf(lines[deck * 2 + 1], sizeof lines[deck * 2 + 1], "Deck %d: loaded %d, loop %s", deck + 1,
-                 s.valid & AZ_LIVE_LOADED ? s.loaded : -1,
-                 s.loop.valid & AZ_LOOP_ENGAGED ? (s.loop.engaged ? "engaged" : "off") : "unavailable");
-        if (s.loop.valid & AZ_LOOP_BOUNDS)
-            snprintf(lines[deck * 2 + 2], sizeof lines[deck * 2 + 2], "  Working IN %.6f s / OUT %.6f s", s.loop.in_s, s.loop.out_s);
+        int rc = library->deck_snapshot(deck, &s);
+        int loaded = -1, engaged = -1;
+        double in_s = 0, out_s = 0;
+        int bounds = 0;
+        struct timespec now;
+        if (rc == AZ_OK) {
+            if (az_data_deck_header(&s, (uint32_t)deck) &&
+                az_data_covers(&s, offsetof(az_deck_snapshot, loaded) + sizeof s.loaded) &&
+                (s.valid & AZ_LIVE_LOADED) && (s.loaded == 0 || s.loaded == 1)) loaded = s.loaded;
+            uint64_t ns = 0;
+            if (!clock_gettime(CLOCK_MONOTONIC, &now) && now.tv_sec >= 0 && now.tv_nsec >= 0 &&
+                now.tv_nsec < 1000000000L &&
+                (uint64_t)now.tv_sec <= (UINT64_MAX - (uint64_t)now.tv_nsec) / UINT64_C(1000000000))
+                ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+            (void)az_read_loop_engaged(&s, (uint32_t)deck, ns, &engaged);
+            bounds = az_read_loop_bounds(&s, (uint32_t)deck, ns, &in_s, &out_s);
+        }
+        snprintf(lines[deck * 2 + 1], sizeof lines[deck * 2 + 1], "Deck %d: loaded %d, loop %s (status %d)", deck + 1,
+                 loaded, engaged < 0 ? "unavailable" : engaged ? "engaged"
+                                                               : "off",
+                 rc);
+        if (bounds)
+            snprintf(lines[deck * 2 + 2], sizeof lines[deck * 2 + 2], "  Working IN %.6f s / OUT %.6f s", in_s, out_s);
         else
             snprintf(lines[deck * 2 + 2], sizeof lines[deck * 2 + 2], "  Working bounds unavailable; retained points unknown");
     }

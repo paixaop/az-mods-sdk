@@ -16,7 +16,7 @@ static void draw(az_draw *d, az_rect area, void *user)
 {
     (void)user;
     if (area.w < 32 || area.h < 64) return;
-    tabs = (az_rect){area.x, area.y, area.w, 40};
+    tabs = (az_rect){ area.x, area.y, area.w, 40 };
     for (unsigned i = 0; i < 4; i++) {
         int left = area.x + (int)i * area.w / 4;
         int right = area.x + (int)(i + 1) * area.w / 4;
@@ -63,9 +63,10 @@ static int init(const az_core_v1 *c)
     library = c->library_service(AZ_LIBRARY_ABI);
     if (!AZ_LIB_HAS(library, data_capabilities) || !AZ_LIB_HAS(library, deck_snapshot)) return -1;
     core = c;
-    for (unsigned i = 0; i < 4; i++) if (pages[i]->init(c)) return -1;
+    for (unsigned i = 0; i < 4; i++)
+        if (pages[i]->init(c)) return -1;
     core->log(LIBRARY_INSPECTOR_ID, "shared core library service ABI %u, one inspector client", library->abi);
-    static az_screen_v1 screen = {0};
+    static az_screen_v1 screen = { 0 };
     screen.size = sizeof screen;
     screen.on_draw = draw;
     screen.on_input = input;
@@ -73,7 +74,6 @@ static int init(const az_core_v1 *c)
 }
 static const char *const tags[] = { "any", NULL };
 static const az_mod_v1 mod = {
-    .abi = AZ_MOD_ABI, .size = sizeof(az_mod_v1), .id = LIBRARY_INSPECTOR_ID,
-    .fw_tags = tags, .init = init, .tick = tick
+    .abi = AZ_MOD_ABI, .size = sizeof(az_mod_v1), .id = LIBRARY_INSPECTOR_ID, .fw_tags = tags, .init = init, .tick = tick
 };
 AZ_MOD_EXPORT const az_mod_v1 *az_mod_v1_entry(void) { return &mod; }

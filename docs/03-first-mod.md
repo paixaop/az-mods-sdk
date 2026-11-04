@@ -130,7 +130,7 @@ After `init`, a mod runs only from callbacks. It can follow either of two models
 
 | | Polling | Event-driven |
 |---|---|---|
-| Entry | `tick()`, called periodically, up to about 30 times a second at a varying rate | Callbacks registered in `init`: deck events, frame and touch filters, surface paints, `post_ui`, and threads of its own |
+| Entry | `tick()`, called periodically, up to about 30 times a second at a varying rate | Callbacks registered in `init`: deck/data events, command completion, frame and touch filters, surface paints, `post_ui`, and threads of its own |
 | Suits | Reading state and repainting on a change | Reacting to something as it happens, or work that blocks |
 | Examples | this template, Set Clock, Deck Overview | Deck Events (`.tick = NULL`) |
 

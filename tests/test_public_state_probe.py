@@ -3,6 +3,7 @@
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -53,7 +54,7 @@ class PublicStateProbe(unittest.TestCase):
                   ("master-clock","compare_timestamps(v.master_ns, query_ns, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL","1"),
                   ("native-load-clock","compare_timestamps(v.load_ns, query_ns, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL","1"),
                   ("native-generation","s->native_load_generation && v.load_unit","1 && v.load_unit"),
-                  ("version","s->version != AZ_DATA_VERSION) return v;","0) return v;"),
+                  ("version","s->size < offsetof(az_deck_snapshot, deck) + sizeof s->deck || s->version != AZ_DATA_VERSION) return v;","s->size < offsetof(az_deck_snapshot, deck) + sizeof s->deck || 0) return v;"),
                   ("source-separation","v.native_load = s->native_load_generation;","v.native_load = s->load_generation;")]
         for name,old,new in variants:
             with self.subTest(guard=name):
@@ -69,7 +70,9 @@ class PublicStateProbe(unittest.TestCase):
                          source=original.replace(old, "a->tempo_rev != b->tempo_rev || a->tempo_ns != b->tempo_ns || " + old), failure=True)
 
     def test_tempo_format_limit(self):
-        self.run_fixture(["-DPROBE_TEMPO_LINE_BYTES=32u", "-DPROBE_EXPECT_TEMPO_FORMAT_LIMIT"])
+        # Deliberately short output exercises runtime truncation handling.
+        flags = ["-Wno-format-truncation"] if sys.platform == "linux" else []
+        self.run_fixture([*flags, "-DPROBE_TEMPO_LINE_BYTES=32u", "-DPROBE_EXPECT_TEMPO_FORMAT_LIMIT"])
 
     def test_tempo_regression_guards(self):
         original = (ROOT / "examples/public-state-probe/probe.c").read_text()
@@ -99,7 +102,7 @@ class PublicStateProbe(unittest.TestCase):
             ("validity", "if (s->valid & AZ_LIVE_MASTER_TEMPO) value.mt = s->master_tempo;", "value.mt = s->master_tempo;", 1),
             ("deck", "probe_library->deck_snapshot(deck, &snapshot)", "probe_library->deck_snapshot(1, &snapshot)", 1),
             ("clock", "if (clock_gettime(CLOCK_MONOTONIC, &time) ||", "if ((clock_gettime(CLOCK_MONOTONIC, &time), 0) ||", 1),
-            ("budget", "records < PROBE_MAX_RECORDS", "records < PROBE_MAX_RECORDS + 1", 5),
+            ("budget", "records < PROBE_MAX_RECORDS", "records < PROBE_MAX_RECORDS + 1", 8),
         ]
         for name, old, new, count in variants:
             with self.subTest(guard=name):

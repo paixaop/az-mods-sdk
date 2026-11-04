@@ -77,17 +77,17 @@ space := $(subst ,, )
 all: $(OUT)/$(MOD_ID).so
 
 ifeq ($(strip $(CXX_SRCS)),)
-$(OUT)/$(MOD_ID).so: $(SRCS) $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h | $(OUT)
+$(OUT)/$(MOD_ID).so: $(SRCS) command-probe-queue.h $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h $(AZ_SDK_INCLUDE)/azmod-data-helpers.h | $(OUT)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS) $(LDLIBS)
 else
 OBJS := $(patsubst %,$(OUT)/obj/%.o,$(SRCS))
-$(OUT)/obj/%.c.o: %.c $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h
+$(OUT)/obj/%.c.o: %.c command-probe-queue.h $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h $(AZ_SDK_INCLUDE)/azmod-data-helpers.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
-$(OUT)/obj/%.cpp.o: %.cpp $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h
+$(OUT)/obj/%.cpp.o: %.cpp command-probe-queue.h $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h $(AZ_SDK_INCLUDE)/azmod-data-helpers.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
-$(OUT)/obj/%.cc.o: %.cc $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h
+$(OUT)/obj/%.cc.o: %.cc command-probe-queue.h $(AZ_SDK_INCLUDE)/azmod-mod.h $(AZ_SDK_INCLUDE)/azmod-timestamps.h $(AZ_SDK_INCLUDE)/azmod-data-helpers.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 $(OUT)/exports.map: | $(OUT)

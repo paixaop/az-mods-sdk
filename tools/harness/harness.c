@@ -1006,8 +1006,13 @@ static const az_library_v1 HT_LIBRARY = {
     .command_poll = ht_command_poll,
     .command_cancel = ht_command_cancel,
     .command_release = ht_command_release,
+    .on_data_event = ht_on_data_event,
+    .on_command_complete = ht_on_command_complete,
+    .command_submit_async = ht_command_submit_async,
+    .command_acknowledge = ht_command_acknowledge,
 };
-static const az_library_v1 *ht_library_service(uint32_t abi) {
+static const az_library_v1 *ht_library_service(uint32_t abi)
+{
     return abi == AZ_LIBRARY_ABI ? &HT_LIBRARY : NULL;
 }
 
@@ -1087,6 +1092,10 @@ static int load_mod(void)
     if (nthreads) end_lifetime();
     pthread_mutex_lock(&ht_mu);
     memset(ht_slots, 0, sizeof ht_slots);
+    ht_data_fn = NULL;
+    ht_command_fn = NULL;
+    ht_data_user = ht_command_user = NULL;
+    ht_sequence = ht_after = 0;
     pthread_mutex_unlock(&ht_mu);
     handle = dlopen(mod_path, RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
@@ -1124,7 +1133,7 @@ static int load_mod(void)
         return 0;
     }
     if (screens_registered > 1 || (screens_registered == 1 && !screen) ||
-        (screens_registered == 0 && nsurf == 0 && nlisten == 0)) {
+        (screens_registered == 0 && nsurf == 0 && nlisten == 0 && !ht_data_fn && !ht_command_fn)) {
         fail(K_INIT, "init registered %d screens, %d surfaces, %d deck-event listeners",
              screens_registered, nsurf, nlisten);
         return 0;
@@ -1135,6 +1144,7 @@ static int load_mod(void)
 static void call_tick(void)
 {
     drain_post();                       /* post_ui callbacks run on the UI thread, before tick */
+    ht_callbacks();
     if (!mod->tick) return;
     ctx = CTX_TICK;
     arm(1);

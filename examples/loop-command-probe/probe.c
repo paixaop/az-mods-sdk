@@ -3,6 +3,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "azmod-mod.h"
 #include "azmod-timestamps.h"
+#include "azmod-data-helpers.h"
+#include "command-probe-queue.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -41,33 +43,49 @@ struct probe_state {
     uint64_t highwater, sequence, commands;
     struct probe_input active;
     az_command_result last;
-    int pending, terminal, last_rc, io_failed;
+    int pending, terminal, last_rc, acknowledged;
+    atomic_int io_failed;
     struct probe_plan plan;
 };
 static struct probe_state probe;
-static uint64_t probe_now(void) {
+static struct probe_log_queue probe_logs;
+/* A dropped post_ui job has no command ownership and no promised result. The
+ * context remains valid even if the worker exits before delivery. */
+static struct {
+    atomic_int busy;
+    struct probe_input value;
+    int valid;
+} probe_job;
+static void probe_enqueue(const char *line, size_t length)
+{
+    if (!probe_log_push(&probe_logs, line, length)) atomic_store(&probe.io_failed, 1);
+}
+static uint64_t probe_now(void)
+{
 #ifdef PROBE_TEST_NOW
     return PROBE_TEST_NOW();
 #else
-    struct timespec ts = {0};
+    struct timespec ts = { 0 };
     if (clock_gettime(CLOCK_MONOTONIC, &ts) || ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L) return 0;
-    uint64_t sec = (uint64_t) ts.tv_sec;
-    return sec <= (UINT64_MAX - (uint64_t) ts.tv_nsec) / UINT64_C(1000000000)
-               ? sec * UINT64_C(1000000000) + (uint64_t) ts.tv_nsec
+    uint64_t sec = (uint64_t)ts.tv_sec;
+    return sec <= (UINT64_MAX - (uint64_t)ts.tv_nsec) / UINT64_C(1000000000)
+               ? sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec
                : 0;
 #endif
 }
-static int probe_integer(const char *s, uint64_t *out) {
+static int probe_integer(const char *s, uint64_t *out)
+{
     if (!*s || (s[0] == '0' && s[1])) return 0;
     uint64_t value = 0;
     for (; *s; ++s) {
-        if (*s < '0' || *s > '9' || value > (UINT64_MAX - (unsigned) (*s - '0')) / 10) return 0;
-        value = value * 10 + (unsigned) (*s - '0');
+        if (*s < '0' || *s > '9' || value > (UINT64_MAX - (unsigned)(*s - '0')) / 10) return 0;
+        value = value * 10 + (unsigned)(*s - '0');
     }
     *out = value;
     return 1;
 }
-static int probe_number(const char *s, double *out) {
+static int probe_number(const char *s, double *out)
+{
     /* No whitespace, hexadecimal, NaN or infinity spellings in the transport. */
     if (!*s || strspn(s, "0123456789.eE+-") != strlen(s)) return 0;
     char *end;
@@ -77,8 +95,9 @@ static int probe_number(const char *s, double *out) {
     *out = value;
     return 1;
 }
-static int probe_parse(const char *line, size_t n, struct probe_input *out) {
-    static const char *keys[] = {"v=", "pid=", "action=", "id=", "deck=", "op=", "load=", "deadline_ns=", "position=", "end=", "beats="};
+static int probe_parse(const char *line, size_t n, struct probe_input *out)
+{
+    static const char *keys[] = { "v=", "pid=", "action=", "id=", "deck=", "op=", "load=", "deadline_ns=", "position=", "end=", "beats=" };
     if (!line || !out || !n || n > 511 || line[n - 1] != '\n' || memchr(line, 0, n)) return 0;
     char copy[512];
     memcpy(copy, line, n - 1);
@@ -95,7 +114,7 @@ static int probe_parse(const char *line, size_t n, struct probe_input *out) {
             at = space + 1;
         } else if (space) return 0;
     }
-    struct probe_input v = {0};
+    struct probe_input v = { 0 };
     uint64_t version, deck, op;
     if (!probe_integer(value[0], &version) || version != 1 || !probe_integer(value[1], &v.pid) ||
         !probe_integer(value[3], &v.id) || !probe_integer(value[4], &deck) || deck > 3 ||
@@ -103,116 +122,118 @@ static int probe_parse(const char *line, size_t n, struct probe_input *out) {
         !probe_integer(value[7], &v.deadline) || !probe_number(value[8], &v.position) ||
         !probe_number(value[9], &v.end) || !probe_number(value[10], &v.beats)) return 0;
     if (strcmp(value[2], "submit") && strcmp(value[2], "cancel") && strcmp(value[2], "snapshot") && strcmp(value[2], "refusals") && strcmp(value[2], "matrix")) return 0;
-    v.deck = (uint32_t) deck;
-    v.op = (uint32_t) op;
+    v.deck = (uint32_t)deck;
+    v.op = (uint32_t)op;
     memcpy(v.action, value[2], strlen(value[2]) + 1);
     *out = v;
     return 1;
 }
-static int probe_results_path(char *path, size_t capacity) {
+static int probe_results_path(char *path, size_t capacity)
+{
     const char *directory = probe.core->data_dir(ID);
     if (!directory || directory[0] != '/' || strlen(directory) > 300 || strpbrk(directory, " \t\r\n")) return 0;
-    int n = snprintf(path, capacity, "%s/results.%ld.log", directory, (long) getpid());
-    return n > 0 && (size_t) n < capacity;
+    int n = snprintf(path, capacity, "%s/results.%ld.log", directory, (long)getpid());
+    return n > 0 && (size_t)n < capacity;
 }
-static void probe_write_record(const char *line, size_t length) {
+static void probe_write_record(const char *line, size_t length)
+{
     char path[512];
     int fd = -1;
     struct stat st;
     int okay = probe_results_path(path, sizeof path);
     if (okay) fd = open(path, O_WRONLY | O_APPEND | O_NOFOLLOW | O_NONBLOCK);
     okay = okay && fd >= 0 && !fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_size >= 0 &&
-           length <= 1024 && st.st_size <= (off_t) (2u * 1024u * 1024u - length);
-    if (okay) okay = write(fd, line, length) == (ssize_t) length;
+           length <= 1024 && st.st_size <= (off_t)(2u * 1024u * 1024u - length);
+    if (okay) okay = write(fd, line, length) == (ssize_t)length;
     if (fd >= 0 && close(fd)) okay = 0;
     if (!okay && !probe.io_failed) {
         probe.io_failed = 1;
-        probe.core->log(ID, "SDK_LOOP_IO error=results_file records=%llu", (unsigned long long) probe.sequence);
+        probe.core->log(ID, "SDK_LOOP_IO error=results_file");
     }
 }
-static void probe_emit(const char *event, const struct probe_input *input, int rc, const az_command_result *result) {
+static void probe_emit(const char *event, const struct probe_input *input, int rc, const az_command_result *result)
+{
     if (probe.sequence >= PROBE_MAX_RECORDS) return;
-    az_deck_snapshot snapshot = {.size = sizeof snapshot};
-    int src = probe.library->deck_snapshot((int) input->deck, &snapshot);
+    az_deck_snapshot snapshot = { .size = sizeof snapshot };
+    int src = probe.library->deck_snapshot((int)input->deck, &snapshot);
     uint64_t query = probe_now();
     int valid = src == AZ_OK && snapshot.size >= sizeof snapshot && snapshot.version == AZ_DATA_VERSION && snapshot.deck == input->deck;
-    int load_valid = valid && (snapshot.valid & AZ_LIVE_NATIVE_LOAD) && snapshot.native_load_generation &&
-                     snapshot.native_load_unit_generation && snapshot.native_load_observed_ns && compare_timestamps(snapshot.native_load_observed_ns, query, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL;
-    int engaged_valid = valid && (snapshot.valid & AZ_LIVE_LOOP_ENGAGED) && (snapshot.loop.valid & AZ_LOOP_ENGAGED) &&
-                        (snapshot.loop.engaged == 0 || snapshot.loop.engaged == 1) && snapshot.loop_unit_generation && snapshot.loop_revision && snapshot.loop_observed_ns && compare_timestamps(snapshot.loop_observed_ns, query, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL;
-    int bounds_valid = valid && (snapshot.valid & AZ_LIVE_LOOP_BOUNDS) && (snapshot.loop.valid & AZ_LOOP_BOUNDS) &&
-                       snapshot.loop_unit_generation && snapshot.loop_revision && snapshot.loop_observed_ns && compare_timestamps(snapshot.loop_observed_ns, query, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL && isfinite(snapshot.loop.in_s) &&
-                       isfinite(snapshot.loop.out_s);
-    /* Collect source coordinates without inventing their sample rate. The
-     * controller validates their order using its bound source rate. */
+    uint64_t generation = 0;
+    int engaged = -1;
+    double in_s = 0, out_s = 0;
+    int load_valid = valid && az_read_native_load_target(&snapshot, input->deck, query, &generation);
+    int engaged_valid = valid && az_read_loop_engaged(&snapshot, input->deck, query, &engaged);
+    int bounds_valid = valid && az_read_loop_bounds(&snapshot, input->deck, query, &in_s, &out_s);
     char line[1024];
     int length = snprintf(line, sizeof line, "SDK_LOOP v=1 seq=%llu event=%s id=%llu deck=%u op=%u target_load=%llu rc=%d outcome=%d reason=%d revision=%llu receipt_ns=%llu query_ns=%llu load_valid=%d native_load=%llu load_unit=%llu load_ns=%llu engaged_valid=%d engaged=%d bounds_valid=%d in=%.17g out=%.17g loop_unit=%llu loop_rev=%llu loop_ns=%llu\n",
-                          (unsigned long long) ++probe.sequence, event, (unsigned long long) input->id, input->deck, input->op,
-                          (unsigned long long) input->load, rc, result ? (int) result->outcome : -1, result ? result->reason : 0,
-                          (unsigned long long) (result ? result->revision : 0), (unsigned long long) (result ? result->observed_ns : 0),
-                          (unsigned long long) query, !!load_valid, (unsigned long long) (load_valid ? snapshot.native_load_generation : 0),
-                          (unsigned long long) (load_valid ? snapshot.native_load_unit_generation : 0),
-                          (unsigned long long) (load_valid ? snapshot.native_load_observed_ns : 0), !!engaged_valid,
-                          engaged_valid ? snapshot.loop.engaged : -1, !!bounds_valid, bounds_valid ? snapshot.loop.in_s : 0, bounds_valid ? snapshot.loop.out_s : 0,
-                          (unsigned long long) (engaged_valid || bounds_valid ? snapshot.loop_unit_generation : 0),
-                          (unsigned long long) (engaged_valid || bounds_valid ? snapshot.loop_revision : 0),
-                          (unsigned long long) (engaged_valid || bounds_valid ? snapshot.loop_observed_ns : 0));
-    if (length > 0 && (size_t) length < sizeof line) probe_write_record(line, (size_t) length);
+                          (unsigned long long)++probe.sequence, event, (unsigned long long)input->id, input->deck, input->op,
+                          (unsigned long long)input->load, rc, result ? (int)result->outcome : -1, result ? result->reason : 0,
+                          (unsigned long long)(result ? result->revision : 0), (unsigned long long)(result ? result->observed_ns : 0),
+                          (unsigned long long)query, !!load_valid, (unsigned long long)(load_valid ? snapshot.native_load_generation : 0),
+                          (unsigned long long)(load_valid ? snapshot.native_load_unit_generation : 0),
+                          (unsigned long long)(load_valid ? snapshot.native_load_observed_ns : 0), !!engaged_valid,
+                          engaged_valid ? engaged : -1, !!bounds_valid, bounds_valid ? in_s : 0, bounds_valid ? out_s : 0,
+                          (unsigned long long)(engaged_valid || bounds_valid ? snapshot.loop_unit_generation : 0),
+                          (unsigned long long)(engaged_valid || bounds_valid ? snapshot.loop_revision : 0),
+                          (unsigned long long)(engaged_valid || bounds_valid ? snapshot.loop_observed_ns : 0));
+    if (length > 0 && (size_t)length < sizeof line) probe_enqueue(line, (size_t)length);
     else if (!probe.io_failed) {
         probe.io_failed = 1;
         probe.core->log(ID, "SDK_LOOP_IO error=format");
     }
 }
-static int probe_result_valid(const az_command_result *value, uint64_t id) {
-    return value->size >= sizeof *value && value->version == AZ_DATA_VERSION &&
-           value->request_id == id && value->outcome <= AZ_COMMAND_UNCERTAIN;
+static int probe_result_valid(const az_command_result *value, uint64_t id)
+{
+    return az_command_result_matches(value, id);
 }
-static void probe_poll(void) {
-    if (!probe.pending) return;
-    if (probe.terminal) {
-        int rc = probe.library->command_release(ID, probe.active.id);
-        if (rc != AZ_BUSY) probe_emit("release", &probe.active, rc, &probe.last);
-        if (rc == AZ_OK) {
-            probe.pending = probe.terminal = 0;
-            memset(&probe.active, 0, sizeof probe.active);
-        }
+static void probe_complete(const az_command_completion *c, void *user)
+{
+    if (user != &probe || !probe.pending || !probe_completion_valid(c, probe.active.id)) {
+        probe.core->log(ID, "SDK_LOOP_PROTOCOL invalid completion; context retained");
         return;
     }
-    az_command_result value = {.size = sizeof value};
-    int rc = probe.library->command_poll(ID, probe.active.id, &value);
-    if (rc == AZ_OK && probe_result_valid(&value, probe.active.id)) {
-        if (memcmp(&value, &probe.last, sizeof value) || probe.last_rc != rc) probe_emit("poll", &probe.active, rc, &value);
-        probe.last = value;
-        if (value.outcome != AZ_COMMAND_ACCEPTED) probe.terminal = 1;
-    } else if (rc != AZ_BUSY && rc != probe.last_rc) probe_emit("poll", &probe.active, rc, NULL);
-    probe.last_rc = rc;
+    if (c->kind == AZ_COMMAND_COMPLETION_TERMINAL && !probe.terminal) {
+        probe.last = c->result;
+        probe.terminal = 1;
+        probe_emit("terminal", &probe.active, AZ_OK, &probe.last);
+        int rc = probe.library->command_acknowledge(ID, probe.active.id);
+        probe.acknowledged = rc == AZ_OK;
+        probe_emit("acknowledge", &probe.active, rc, &probe.last);
+    } else if (c->kind == AZ_COMMAND_COMPLETION_RELEASED && c->settled == 1 &&
+               probe.terminal && probe.acknowledged && probe_terminal_equal(&c->result, &probe.last)) {
+        probe_emit("released", &probe.active, AZ_OK, &probe.last);
+        probe.pending = probe.terminal = probe.acknowledged = 0;
+        memset(&probe.active, 0, sizeof probe.active);
+    } else probe.core->log(ID, "SDK_LOOP_PROTOCOL out-of-order completion; context retained");
 }
-static int probe_submit(const struct probe_input *v) {
-    az_data_capabilities caps = {.size = sizeof caps};
+static int probe_submit(const struct probe_input *v)
+{
+    az_data_capabilities caps = { .size = sizeof caps };
     int rc = probe.library->data_capabilities(&caps);
-    if (rc != AZ_OK || !(caps.commands & (UINT64_C(1) << v->op))) {
+    if (rc != AZ_OK || caps.size < sizeof caps || caps.version != AZ_DATA_VERSION || !(caps.commands & (UINT64_C(1) << v->op))) {
         probe_emit("refused", v, AZ_UNSUPPORTED, NULL);
         return AZ_UNSUPPORTED;
     }
-    az_command_request request = {.size = sizeof request, .version = AZ_DATA_VERSION, .operation = v->op, .deck = v->deck, .request_id = v->id, .expected_load_generation = v->load, .deadline_ns = v->deadline, .quantization = AZ_QUANTIZE_NATIVE, .flags = AZ_COMMAND_NATIVE_LOAD, .position_s = v->position, .end_s = v->end, .beats = v->beats};
-    az_command_result result = {.size = sizeof result};
+    az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = v->op, .deck = v->deck, .request_id = v->id, .expected_load_generation = v->load, .deadline_ns = v->deadline, .quantization = AZ_QUANTIZE_NATIVE, .flags = AZ_COMMAND_NATIVE_LOAD, .position_s = v->position, .end_s = v->end, .beats = v->beats };
+    az_command_result result = { .size = sizeof result };
     memset(&probe.last, 0, sizeof probe.last);
-    rc = probe.library->command_submit(ID, &request, &result);
-    probe_emit("submit", v, rc, (rc == AZ_OK || rc == AZ_PENDING || rc == AZ_STALE || rc == AZ_UNSUPPORTED) && probe_result_valid(&result, v->id) ? &result : NULL);
-    if (probe_result_valid(&result, v->id)) probe.last = result;
-    if (rc == AZ_OK && probe_result_valid(&result, v->id)) {
+    rc = probe.library->command_submit_async(ID, &request, probe_complete, &probe, &result);
+    probe_emit("submit", v, rc, (rc != AZ_INVALID && rc != AZ_BUSY) && probe_result_valid(&result, v->id) ? &result : NULL);
+    if (rc != AZ_INVALID && rc != AZ_BUSY && probe_result_valid(&result, v->id)) probe.last = result;
+    if (rc == AZ_OK) {
         probe.active = *v;
         probe.last = result;
         probe.pending = 1;
-        probe.terminal = result.outcome != AZ_COMMAND_ACCEPTED;
+        probe.terminal = probe.acknowledged = 0;
         probe.last_rc = AZ_OK;
     }
     return rc;
 }
 static int probe_plan_start(const struct probe_input *v);
-static int probe_handle(const struct probe_input *v) {
+static int probe_handle(const struct probe_input *v)
+{
     uint64_t now = probe_now();
-    if (v->pid != (uint64_t) getpid() || !now) {
+    if (v->pid != (uint64_t)getpid() || !now) {
         probe_emit("refused", v, AZ_STALE, NULL);
         return AZ_STALE;
     }
@@ -230,7 +251,7 @@ static int probe_handle(const struct probe_input *v) {
             return AZ_INVALID;
         }
         if (probe.plan.kind) probe.plan.stopping = 1;
-        az_command_result result = {.size = sizeof result};
+        az_command_result result = { .size = sizeof result };
         int rc = probe.library->command_cancel(ID, v->id, &result);
         probe_emit("cancel", &probe.active, rc, (rc == AZ_OK || rc == AZ_PENDING || rc == AZ_STALE) && probe_result_valid(&result, v->id) ? &result : NULL);
         return rc;
@@ -256,43 +277,46 @@ static int probe_handle(const struct probe_input *v) {
     return probe_submit(v);
 }
 
-
-static void probe_plan_record(const char *event, const char *status) {
+static void probe_plan_record(const char *event, const char *status)
+{
     char line[512];
     int n = snprintf(line, sizeof line,
                      "SDK_LOOP_PLAN v=1 event=%s kind=%s id=%llu deck=%u load=%llu status=%s completed=%u query_ns=%llu deadline_ns=%llu\n",
                      event, probe.plan.kind == PLAN_REFUSALS ? "refusals" : "matrix",
-                     (unsigned long long) probe.plan.first_id, probe.plan.current.deck, (unsigned long long) probe.plan.load,
-                     status, probe.plan.completed, (unsigned long long) probe_now(), (unsigned long long) probe.plan.overall_deadline);
-    if (n > 0 && (size_t) n < sizeof line) probe_write_record(line, (size_t) n);
+                     (unsigned long long)probe.plan.first_id, probe.plan.current.deck, (unsigned long long)probe.plan.load,
+                     status, probe.plan.completed, (unsigned long long)probe_now(), (unsigned long long)probe.plan.overall_deadline);
+    if (n > 0 && (size_t)n < sizeof line) probe_enqueue(line, (size_t)n);
 }
-static void probe_plan_finish(const char *status) {
+static void probe_plan_finish(const char *status)
+{
     if (!probe.plan.kind) return;
     probe_plan_record("done", status);
     probe.plan.kind = PLAN_NONE;
 }
-static int probe_snapshot(uint32_t deck, az_deck_snapshot *snapshot, uint64_t now) {
+static int probe_snapshot(uint32_t deck, az_deck_snapshot *snapshot, uint64_t now)
+{
     memset(snapshot, 0, sizeof *snapshot);
     snapshot->size = sizeof *snapshot;
-    int rc = probe.library->deck_snapshot((int) deck, snapshot);
+    int rc = probe.library->deck_snapshot((int)deck, snapshot);
     uint64_t query = probe_now();
-    return query >= now && rc == AZ_OK && snapshot->size >= sizeof *snapshot &&
-           snapshot->version == AZ_DATA_VERSION && snapshot->deck == deck && (snapshot->valid & AZ_LIVE_NATIVE_LOAD) &&
-           snapshot->native_load_generation && snapshot->native_load_unit_generation && snapshot->native_load_observed_ns &&
-           compare_timestamps(snapshot->native_load_observed_ns, query, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL;
+    uint64_t generation = 0;
+    return query >= now && rc == AZ_OK && az_read_native_load_target(snapshot, deck, query, &generation);
 }
-static void probe_plan_snapshot(void) {
-    struct probe_input snapshot = {.deck = probe.plan.current.deck};
+static void probe_plan_snapshot(void)
+{
+    struct probe_input snapshot = { .deck = probe.plan.current.deck };
     probe_emit("snapshot", &snapshot, AZ_OK, NULL);
 }
-static void probe_plan_cancel(void) {
+static void probe_plan_cancel(void)
+{
     if (probe.pending && !probe.terminal) {
-        az_command_result result = {.size = sizeof result};
+        az_command_result result = { .size = sizeof result };
         int rc = probe.library->command_cancel(ID, probe.active.id, &result);
         probe_emit("cancel", &probe.active, rc, probe_result_valid(&result, probe.active.id) ? &result : NULL);
     }
 }
-static int probe_plan_start(const struct probe_input *v) {
+static int probe_plan_start(const struct probe_input *v)
+{
     uint64_t now = probe_now();
     int kind = !strcmp(v->action, "refusals") ? PLAN_REFUSALS : PLAN_MATRIX;
     unsigned count = kind == PLAN_REFUSALS ? 12u : 15u;
@@ -323,10 +347,11 @@ static int probe_plan_start(const struct probe_input *v) {
     probe_plan_record("start", "INCOMPLETE");
     return AZ_OK;
 }
-static void probe_plan_arguments(struct probe_input *v) {
-    static const unsigned matrix[15] = {AZ_CMD_LOOP_EXIT, AZ_CMD_LOOP_IN, AZ_CMD_LOOP_OUT, AZ_CMD_LOOP_DOUBLE,
-                                        AZ_CMD_LOOP_HALVE, AZ_CMD_LOOP_LENGTH, AZ_CMD_LOOP_ADJUST_IN, AZ_CMD_LOOP_ADJUST_OUT, AZ_CMD_LOOP_MOVE,
-                                        AZ_CMD_LOOP_EXIT, AZ_CMD_RELOOP, AZ_CMD_LOOP_EXIT, AZ_CMD_LOOP_ENTER, AZ_CMD_LOOP_EXIT, AZ_CMD_LOOP_CLEAR};
+static void probe_plan_arguments(struct probe_input *v)
+{
+    static const unsigned matrix[15] = { AZ_CMD_LOOP_EXIT, AZ_CMD_LOOP_IN, AZ_CMD_LOOP_OUT, AZ_CMD_LOOP_DOUBLE,
+                                         AZ_CMD_LOOP_HALVE, AZ_CMD_LOOP_LENGTH, AZ_CMD_LOOP_ADJUST_IN, AZ_CMD_LOOP_ADJUST_OUT, AZ_CMD_LOOP_MOVE,
+                                         AZ_CMD_LOOP_EXIT, AZ_CMD_RELOOP, AZ_CMD_LOOP_EXIT, AZ_CMD_LOOP_ENTER, AZ_CMD_LOOP_EXIT, AZ_CMD_LOOP_CLEAR };
     memset(v, 0, sizeof *v);
     v->pid = probe.plan.pid;
     v->id = probe.plan.first_id + probe.plan.index;
@@ -338,7 +363,8 @@ static void probe_plan_arguments(struct probe_input *v) {
     if (v->op == AZ_CMD_LOOP_MOVE || v->op == AZ_CMD_LOOP_ADJUST_IN) v->position = .05;
     if (v->op == AZ_CMD_LOOP_ADJUST_OUT) v->end = .05;
 }
-static void probe_plan_advance(uint64_t now) {
+static void probe_plan_advance(uint64_t now)
+{
     unsigned operation = probe.plan.current.op;
     probe.plan.completed++;
     probe.plan.index++;
@@ -349,14 +375,15 @@ static void probe_plan_advance(uint64_t now) {
     probe.plan.phase = 1;
     probe.plan.next_at = now + (operation == AZ_CMD_LOOP_IN && probe.plan.kind == PLAN_MATRIX ? UINT64_C(1000000000) : 0);
 }
-static void probe_plan_step(void) {
+static void probe_plan_step(void)
+{
     if (!probe.plan.kind) return;
     uint64_t now = probe_now();
     if (probe.io_failed) {
         probe.plan.kind = PLAN_NONE;
         return;
     }
-    if (!now || compare_timestamps(now, probe.plan.overall_deadline, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL || probe.plan.pid != (uint64_t) getpid()) {
+    if (!now || compare_timestamps(now, probe.plan.overall_deadline, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL || probe.plan.pid != (uint64_t)getpid()) {
         probe_plan_cancel();
         probe_plan_finish("INCOMPLETE");
         return;
@@ -450,58 +477,93 @@ static void probe_plan_step(void) {
     probe_plan_finish("FAIL");
 }
 
-static void probe_ready(const char *directory) {
-    probe.core->log(ID, "SDK_LOOP_READY v=1 pid=%ld commands=%llu data=%s", (long) getpid(), (unsigned long long) probe.commands, directory);
+static void probe_ready(const char *directory)
+{
+    probe.core->log(ID, "SDK_LOOP_READY v=1 pid=%ld commands=%llu data=%s", (long)getpid(), (unsigned long long)probe.commands, directory);
 }
-static void probe_step(void) {
-    probe_poll();
+static void probe_step(void)
+{
     probe_plan_step();
     if (probe.io_failed) return;
     const char *directory = probe.core->data_dir(ID);
     if (!directory || directory[0] != '/' || strlen(directory) > 300 || strpbrk(directory, " \t\r\n")) return;
-    az_data_capabilities caps = {.size = sizeof caps};
+    az_data_capabilities caps = { .size = sizeof caps };
     if (probe.library->data_capabilities(&caps) == AZ_OK && caps.version == AZ_DATA_VERSION && caps.commands != probe.commands) {
         probe.commands = caps.commands;
         probe_ready(directory);
     }
+}
+static void probe_run_job(void *user)
+{
+    if (user != &probe_job) return;
+    if (probe_job.valid && !strcmp(probe_job.value.action, "submit")) {
+        az_deck_snapshot s = { .size = sizeof s };
+        uint64_t generation = 0;
+        int rc = probe.library->deck_snapshot((int)probe_job.value.deck, &s);
+        if (rc != AZ_OK || !az_read_native_load_target(&s, probe_job.value.deck, probe_now(), &generation) || generation != probe_job.value.load) {
+            probe_emit("refused", &probe_job.value, rc == AZ_OK ? AZ_STALE : rc, NULL);
+            atomic_store_explicit(&probe_job.busy, 0, memory_order_release);
+            return;
+        }
+    }
+    if (probe_job.valid) (void)probe_handle(&probe_job.value);
+    else probe_emit("refused", &probe_job.value, AZ_INVALID, NULL);
+    atomic_store_explicit(&probe_job.busy, 0, memory_order_release);
+}
+static void probe_flush(void)
+{
+    char line[PROBE_LOG_BYTES];
+    size_t length;
+    while (probe_log_pop(&probe_logs, line, &length)) probe_write_record(line, length);
+}
+static void probe_worker_step(void)
+{
+    probe_flush();
+    if (atomic_load_explicit(&probe_job.busy, memory_order_acquire) || atomic_load(&probe.io_failed)) return;
+    const char *directory = probe.core->data_dir(ID);
+    if (!directory || directory[0] != '/' || strlen(directory) > 300 || strpbrk(directory, " \t\r\n")) return;
     char request[1024], claimed[1024];
     int a = snprintf(request, sizeof request, "%s/request", directory), b = snprintf(claimed, sizeof claimed, "%s/request.processing", directory);
-    if (a < 0 || (size_t) a >= sizeof request || b < 0 || (size_t) b >= sizeof claimed || rename(request, claimed)) return;
+    if (a < 0 || (size_t)a >= sizeof request || b < 0 || (size_t)b >= sizeof claimed || rename(request, claimed)) return;
     int fd = open(claimed, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     struct stat st;
     char line[512];
     ssize_t n = -1;
-    if (fd >= 0 && !fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size < (off_t) sizeof line)
+    if (fd >= 0 && !fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_uid == geteuid() && st.st_size > 0 && st.st_size < (off_t)sizeof line)
         n = read(fd, line, sizeof line);
     if (fd >= 0) close(fd);
     unlink(claimed);
-    struct probe_input v = {0};
-    if (n <= 0 || !probe_parse(line, (size_t) n, &v)) probe_emit("refused", &v, AZ_INVALID, NULL);
-    else (void) probe_handle(&v);
+    memset(&probe_job.value, 0, sizeof probe_job.value);
+    probe_job.valid = n > 0 && probe_parse(line, (size_t)n, &probe_job.value);
+    atomic_store_explicit(&probe_job.busy, 1, memory_order_release);
+    probe.core->post_ui(ID, probe_run_job, &probe_job);
 }
-static void *probe_worker(void *unused) {
-    (void) unused;
-    for (unsigned tick = 0; tick < PROBE_MAX_TICKS && probe.sequence < PROBE_MAX_RECORDS && (!probe.io_failed || probe.pending); ++tick) {
-        probe_step();
-        struct timespec delay = {0, 50000000};
+static void *probe_worker(void *unused)
+{
+    (void)unused;
+    for (unsigned tick = 0; tick < PROBE_MAX_TICKS; ++tick) {
+        probe_worker_step();
+        struct timespec delay = { 0, 50000000 };
         if (nanosleep(&delay, NULL) && errno != EINTR) break;
     }
-    if (probe.plan.kind) {
-        probe_plan_cancel();
-        probe_plan_finish("INCOMPLETE");
-    }
-    probe.core->log(ID, "SDK_LOOP_DONE records=%llu pending=%d", (unsigned long long) probe.sequence, probe.pending);
+    probe_flush();
+    probe.core->log(ID, "SDK_LOOP_DONE; unreleased callback and scheduling contexts retained");
     return NULL;
 }
-static int init(const az_core_v1 *core) {
+static int init(const az_core_v1 *core)
+{
     if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, log) || !AZ_HAS(core, data_dir) ||
-        !AZ_HAS(core, thread_start) || !AZ_HAS(core, library_service)) return -1;
+        !AZ_HAS(core, thread_start) || !AZ_HAS(core, library_service) || !AZ_HAS(core, post_ui)) return -1;
     const az_library_v1 *lib = core->library_service(AZ_LIBRARY_ABI);
-    if (!AZ_LIB_HAS(lib, data_capabilities) || !AZ_LIB_HAS(lib, deck_snapshot) || !AZ_LIB_HAS(lib, command_submit) ||
-        !AZ_LIB_HAS(lib, command_poll) || !AZ_LIB_HAS(lib, command_cancel) || !AZ_LIB_HAS(lib, command_release)) return -1;
-    az_data_capabilities caps = {.size = sizeof caps};
+    if (!AZ_LIB_HAS(lib, data_capabilities) || !AZ_LIB_HAS(lib, deck_snapshot) || !AZ_LIB_HAS(lib, command_submit_async) ||
+        !AZ_LIB_HAS(lib, command_acknowledge) || !AZ_LIB_HAS(lib, command_cancel)) return -1;
+    az_data_capabilities caps = { .size = sizeof caps };
     if (lib->data_capabilities(&caps) != AZ_OK) return -1;
     memset(&probe, 0, sizeof probe);
+    atomic_init(&probe.io_failed, 0);
+    atomic_init(&probe_job.busy, 0);
+    atomic_init(&probe_logs.written, 0);
+    atomic_init(&probe_logs.consumed, 0);
     probe.core = core;
     probe.library = lib;
     probe.commands = caps.commands;
@@ -518,6 +580,6 @@ static int init(const az_core_v1 *core) {
     probe_ready(directory);
     return core->thread_start(ID, "sdk-loop-command", probe_worker, NULL) == 0 ? 0 : -1;
 }
-static const char *const tags[] = {"any", NULL};
-static const az_mod_v1 mod = {.abi = AZ_MOD_ABI, .size = sizeof mod, .id = ID, .fw_tags = tags, .init = init};
+static const char *const tags[] = { "any", NULL };
+static const az_mod_v1 mod = { .abi = AZ_MOD_ABI, .size = sizeof mod, .id = ID, .fw_tags = tags, .init = init, .tick = probe_step };
 AZ_MOD_EXPORT const az_mod_v1 *az_mod_v1_entry(void) { return &mod; }
