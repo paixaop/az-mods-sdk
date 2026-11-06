@@ -38,3 +38,62 @@ jobs:
             diff -u core.h include/azmod-mod.h || true
             exit 1
           fi
+
+  provider-integration:
+    if: github.event_name == 'workflow_dispatch'
+    needs: compare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libsqlite3-dev libx11-dev xauth xvfb
+          sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Check out the pinned core revision
+        run: |
+          core="$RUNNER_TEMP/xdj-az-mods"
+          sha=$(tr -d '[:space:]' < include/CORE-COMMIT)
+          git init "$core"
+          git -C "$core" fetch --depth=1 https://github.com/Kyle-Hosman/xdj-az-mods.git "$sha"
+          git -C "$core" checkout --detach FETCH_HEAD
+          test "$(git -C "$core" rev-parse HEAD)" = "$sha"
+          test -z "$(git -C "$core" status --porcelain)"
+          python3 tools/check-header.py "$core/src/azmod/azmod-mod.h"
+          printf 'AZ_CORE_TEST_ROOT=%s\n' "$core" >> "$GITHUB_ENV"
+      - name: Run the required provider and completion suites
+        env:
+          AZ_COMMAND_REAL_X: '1'
+          HOST_CC: clang
+          HOST_CXX: clang++
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          xvfb-run -a python3 - <<'PY'
+          import unittest
+
+          required = {
+              "test_command_completion": 3,
+              "test_public_cue_provider": 2,
+              "test_public_wave_layer_engine": 2,
+              "test_public_wave_layer_full_provider": 2,
+          }
+
+          def cases(suite):
+              for test in suite:
+                  if isinstance(test, unittest.TestSuite):
+                      yield from cases(test)
+                  else:
+                      yield test
+
+          suite = unittest.defaultTestLoader.discover("tests")
+          ids = [test.id() for test in cases(suite)]
+          for module, count in required.items():
+              if sum(test.startswith(module + ".") for test in ids) < count:
+                  raise SystemExit(f"Required integration cases missing from {module}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          skipped = [test.id() for test, _ in result.skipped if test.id().split(".")[0] in required]
+          if skipped:
+              raise SystemExit("Required integration cases skipped: " + ", ".join(skipped))
+          if not result.wasSuccessful():
+              raise SystemExit(1)
+          PY

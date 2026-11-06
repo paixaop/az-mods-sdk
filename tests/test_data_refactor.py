@@ -1,4 +1,5 @@
 """Run public readers and real inspector pages against controlled receipts."""
+import os
 import pathlib
 import shutil
 import subprocess
@@ -41,7 +42,8 @@ class DataRefactor(unittest.TestCase):
         self.run_fixture('data-helpers.c', sanitize=True)
 
     def test_authoritative_core_clock(self):
-        core = ROOT.parent/'xdj-az-mods/src/common'
+        checkout = pathlib.Path(os.environ.get('AZ_CORE_TEST_ROOT', ROOT.parent/'xdj-az-mods'))
+        core = checkout/'src/common'
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory)
             (path/'azmod-timestamps.h').write_text((core/'aztimestamp.h').read_text())

@@ -138,9 +138,10 @@ this side effect. These are transient native edits, not verified saved-track
 persistence. Native operations can reposition playback.
 
 All operations share per-deck FIFO ordering, load/lifetime checks, deadlines,
-cancellation and correlated Slip/BeatSync/Quantize descendant tracking. Poll
-`command_poll` until terminal (or use `on_command_complete`), then `command_release`. `ACCEPTED` can span
-processing frames. `APPLIED` requires settled descendants and the operation's
+cancellation and correlated Slip/BeatSync/Quantize descendant tracking. Submit
+with `command_submit_async`, copy the `TERMINAL` result and acknowledge the ID.
+Keep its callback context through `RELEASED`. `ACCEPTED` can span processing
+frames. `APPLIED` requires settled descendants and the operation's
 checked postcondition on the same load; clamped/no-op or partial adjustments
 cannot count as successful exact edits. Its revision is the shared transient
 confirmation counter, independent of deck, loop and database revisions.
@@ -150,9 +151,9 @@ Saved cue writes require `AZ_COMMAND_PERSIST`. Revision-selected operations
 also use `AZ_COMMAND_NATIVE_CUE_IDS` and the exact revision/entry ID returned by
 `native_cues`; file-provider IDs are not interchangeable with native IDs. Saved
 and Memory recall use native-load/native-cue-ID flags without the persistence
-flag. Poll to a terminal result, release it, and refresh the cue snapshot to the
-confirmed revision. Memory RGB accepts the native palette; Hot RGB supports the
-requested 24-bit color. See the public header for exact operation arguments.
+flag. Refresh the cue snapshot to the revision confirmed in the terminal callback.
+Memory cues use the native palette and Hot Cues support 24-bit RGB. See the public
+header for exact operation arguments.
 
 | Operation | Native confirmation |
 |---|---|
