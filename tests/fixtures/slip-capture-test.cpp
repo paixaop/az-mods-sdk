@@ -2,6 +2,7 @@
 /* Host invokes only the original-frame boundary double. Entry0/firmware ABI,
  * source ownership and native Slip meaning are not supplied by this fixture. */
 #include "capture.h"
+#include "azmod-timestamps.h"
 #include <atomic>
 #include <cassert>
 #include <cerrno>
@@ -265,7 +266,8 @@ int main(int argc, char **argv)
             frame.invoke();
             slip_capture_record out = {};
             assert(slip_capture_read(i + 1, &out) && "missing by-value Slip capture record after native forwarding");
-            assert(out.sequence == i + 1 && out.observed_ns == UINT64_C(1000000000) + i && out.receiver == frame.call.args[0] && out.caller == caller && out.raw == raw[i] && !out.reserved);
+            const int observed = compare_timestamps(out.observed_ns, UINT64_C(1000000000) + i, 1000000000, 1000000000, 1);
+            assert(out.sequence == i + 1 && observed != AZ_TIME_INVALID && observed == AZ_TIME_EQUAL && out.receiver == frame.call.args[0] && out.caller == caller && out.raw == raw[i] && !out.reserved);
         }
         assert(stats().saved == 4);
         absent(0);

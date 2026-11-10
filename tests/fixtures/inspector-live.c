@@ -1,86 +1,57 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-#define _POSIX_C_SOURCE 200809L
 #include "azmod-mod.h"
 #include <assert.h>
 #include <string.h>
-#include <time.h>
-static int clock_failed, read_status;
-static az_deck_snapshot source;
-static int test_clock(clockid_t id, struct timespec *out)
-{
-    assert(id == CLOCK_MONOTONIC);
-    out->tv_sec = 0;
-    out->tv_nsec = 10;
-    return clock_failed ? -1 : 0;
-}
-#define clock_gettime test_clock
 #include "live.c"
-static int read_deck(int deck, az_deck_snapshot *out)
+
+static az_deck_status_fn receive;
+static unsigned registered;
+static int subscribe(const char *id, const az_deck_watch_v1 *w, az_deck_status_fn fn, void *user, az_deck_subscription *out)
 {
-    *out = source;
-    out->deck = (uint32_t)deck;
-    return read_status;
-}
-static int caps(az_data_capabilities *out)
-{
-    (void)out;
+    assert(!strcmp(id, ID) && w->topics == AZ_STATUS_ALL_V1 && w->deck_mask == 15 && !user);
+    *out = ++registered;
+    receive = fn;
     return AZ_OK;
 }
-static const az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service, .data_capabilities = caps, .deck_snapshot = read_deck };
+static int release(const char *id, az_deck_subscription s)
+{
+    (void)id;
+    (void)s;
+    return AZ_OK;
+}
+static int poll_trap(int deck, az_deck_snapshot *out)
+{
+    (void)deck;
+    (void)out;
+    assert(0);
+    return AZ_FAILED;
+}
+static const az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service, .on_deck_status = subscribe, .deck_status_release = release, .deck_snapshot = poll_trap };
 const az_library_v1 *library = &service;
 int main(void)
 {
     az_core_v1 c = { 0 };
-    assert(init(&c) == 0);
-    source.size = sizeof source;
-    source.version = AZ_DATA_VERSION;
-    source.valid = AZ_LIVE_LOADED | AZ_LIVE_LOOP_ENGAGED | AZ_LIVE_LOOP_BOUNDS;
-    source.loaded = 1;
-    source.loop.size = sizeof source.loop;
-    source.loop.version = AZ_DATA_VERSION;
-    source.loop.valid = AZ_LOOP_ENGAGED | AZ_LOOP_BOUNDS;
-    source.loop.engaged = 1;
-    source.loop.out_s = 4;
-    source.loop_unit_generation = 1;
-    source.loop_revision = 1;
-    source.loop_observed_ns = 5;
-    tick();
-    assert(strstr(lines[1], "loaded 1, loop engaged"));
-    assert(strstr(lines[2], "IN 0.000000"));
-    read_status = AZ_BUSY;
-    tick();
-    assert(strstr(lines[1], "loaded -1, loop unavailable"));
-    assert(strstr(lines[2], "bounds unavailable"));
-    read_status = AZ_FAILED;
-    tick();
-    assert(strstr(lines[1], "loop unavailable"));
-    read_status = AZ_OK;
-    tick();
-    assert(strstr(lines[1], "loop engaged"));
-    source.valid &= ~AZ_LIVE_LOOP_ENGAGED;
-    tick();
-    assert(strstr(lines[1], "loop unavailable"));
-    assert(strstr(lines[2], "IN 0.000000"));
-    source.valid |= AZ_LIVE_LOOP_ENGAGED;
-    source.loop.valid &= ~AZ_LOOP_BOUNDS;
-    tick();
-    assert(strstr(lines[1], "loop engaged"));
-    assert(strstr(lines[2], "bounds unavailable"));
-    source.loop.valid |= AZ_LOOP_BOUNDS;
-    clock_failed = 1;
-    tick();
-    assert(strstr(lines[1], "loaded 1, loop unavailable"));
-    assert(strstr(lines[2], "bounds unavailable"));
-    clock_failed = 0;
-    source.version++;
-    tick();
-    assert(strstr(lines[1], "loaded -1, loop unavailable"));
-    source.version--;
-    source.size = 4;
-    tick();
-    assert(strstr(lines[1], "loop unavailable"));
-    source.size = sizeof source;
-    tick();
-    assert(strstr(lines[1], "loop engaged"));
+    assert(init(&c) == 0 && registered == 1 && !library_page_live.tick && receive);
+    az_status_loop_v1 l = { 0 };
+    l.header = (az_status_topic_v1){ sizeof l, 1, 9, 9, 9 };
+    l.engaged = 1;
+    l.engaged_info = (az_status_field_info_v1){ .info = { AZ_AVAIL_READY, AZ_PROV_NATIVE, 1, 1 }, .scope = AZ_STATUS_LOAD_SCOPE, .count = 1, .scope_id = 7 };
+    l.retained_in_info = l.engaged_info;
+    l.retained_out_info.info.availability = AZ_AVAIL_EMPTY;
+    az_deck_status_view_v1 v = { .size = sizeof v, .version = 1, .loop = &l };
+    az_deck_status_event_v1 e = { .size = sizeof e, .version = 1, .kind = AZ_STATUS_CHANGE, .deck = 1, .topics = AZ_STATUS_TOPIC(AZ_STATUS_LOOP), .load_epoch = 7, .view = &v };
+    receive(&e, NULL);
+    assert(strstr(lines[1][LIVE_CUES][0], "engaged"));
+    assert(strstr(lines[1][LIVE_CUES][1], "0.000000"));
+    assert(strstr(lines[1][LIVE_CUES][2], "empty"));
+    l.header.valid = 0;
+    l.engaged_info.info.availability = AZ_AVAIL_STALE;
+    l.retained_in_info.info.availability = AZ_AVAIL_STALE;
+    e.kind = AZ_STATUS_RESYNC;
+    receive(&e, NULL);
+    assert(strstr(lines[1][LIVE_CUES][0], "stale") && strstr(lines[1][LIVE_CUES][1], "stale"));
+    v.loop = NULL;
+    receive(&e, NULL);
+    assert(!lines[1][LIVE_CUES][0][0] && !lines[1][LIVE_CUES][1][0]);
     return 0;
 }

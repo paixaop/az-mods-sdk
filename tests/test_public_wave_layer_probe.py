@@ -8,7 +8,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CASES = ("good", "pending_once", "busy_once", "immediate_range", "reserved", "inverse", "provenance", "bounds", "ref",
-         "clock_axis", "stride", "bytes", "availability", "null_payload", "count", "header",
+         "clock_axis", "clock_axis_zero", "clock_axis_nan", "stride", "bytes", "availability", "null_payload", "count", "header",
          "pending", "layer_pending", "layer_request_busy", "request_busy", "resolve_busy", "no_track", "missing_service", "unsupported8", "clock", "clock_after_ticket", "start_failure", "error_ticket", "zero_ticket")
 
 

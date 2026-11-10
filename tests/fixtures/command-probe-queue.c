@@ -32,6 +32,15 @@ static void *consume(void *unused)
 }
 int main(void)
 {
+    az_command_result first = { .request_id = 3, .outcome = AZ_COMMAND_APPLIED,
+                               .reason = AZ_OK, .revision = 7, .observed_ns = UINT64_MAX - 1 };
+    az_command_result second = first;
+    assert(probe_terminal_equal(&first, &second));
+    ++second.observed_ns;
+    assert(!probe_terminal_equal(&first, &second)); /* A full 1 ns lies outside N=1. */
+    second = first;
+    ++second.request_id;
+    assert(!probe_terminal_equal(&first, &second));
     char bytes[PROBE_LOG_BYTES] = { 0 };
     size_t length = 0;
     assert(!probe_log_pop(&queue, bytes, &length));

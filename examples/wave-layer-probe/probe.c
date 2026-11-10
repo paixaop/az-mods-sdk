@@ -29,9 +29,13 @@ struct probe {
 static uint64_t probe_now(void)
 {
     struct timespec t = { 0 };
-    if (clock_gettime(CLOCK_MONOTONIC, &t) || t.tv_sec < 0 || t.tv_nsec < 0 || t.tv_nsec >= 1000000000L) return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+    const int seconds = compare_timestamps(t.tv_sec, 0, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(t.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
+    if (seconds == AZ_TIME_INVALID || seconds == AZ_TIME_BEFORE || nanos == AZ_TIME_INVALID || nanos != AZ_TIME_BEFORE) return 0;
     uint64_t s = (uint64_t)t.tv_sec;
-    if (s > (UINT64_MAX - (uint64_t)t.tv_nsec) / UINT64_C(1000000000)) return 0;
+    const int range = compare_timestamps(s, (UINT64_MAX - (uint64_t)t.tv_nsec) / UINT64_C(1000000000), 1, 1000000000, 1);
+    if (range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
     return s * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
 }
 static void stop(struct probe *p, const char *status, const char *reason)
@@ -188,12 +192,18 @@ static int geometry(struct probe *p, const az_track_ref *ref, const az_wave_quer
     uint32_t count = v->total_columns - q->first_column;
     if (count > q->column_count) count = q->column_count;
     unsigned stride = q->encoding == AZ_WAVE_PWV7_BANDS ? 3u : 6u;
+    /* PWV7's source clock is 150 columns/second. Check the complete extent,
+     * so a one-column window does not conceal an invalid per-column scale. */
+    const int start = compare_timestamps(v->start_s, q->first_column / 150.0, 1, 150, 1);
+    const int extent = compare_timestamps(v->seconds_per_column * v->total_columns,
+                                          v->total_columns / 150.0, 1, 150, 1);
     if (v->encoding != q->encoding || v->first_column != q->first_column || v->column_count != count ||
         count > PROBE_COLUMNS || v->bytes_per_column != stride || v->data_bytes != count * stride || !v->columns ||
         v->info.availability != AZ_AVAIL_READY ||
         v->info.provenance != (stride == 3 ? AZ_PROV_FILE : AZ_PROV_DERIVED) ||
         !v->revision || !v->observed_ns || v->reserved[0] || v->reserved[1] ||
-        v->start_s != q->first_column / 150.0 || v->seconds_per_column != 1.0 / 150.0) goto bad;
+        start == AZ_TIME_INVALID || start != AZ_TIME_EQUAL ||
+        extent == AZ_TIME_INVALID || extent != AZ_TIME_EQUAL) goto bad;
     return 1;
 bad:
     stop(p, "FAIL", "geometry_ref_provenance");

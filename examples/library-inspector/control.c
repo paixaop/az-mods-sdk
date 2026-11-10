@@ -35,8 +35,11 @@ static void draw(az_draw *d, az_rect area, void *user)
 }
 static int same_result(const az_command_result *a, const az_command_result *b)
 {
+    int observed = compare_timestamps(a->observed_ns, b->observed_ns,
+                                      UINT64_C(1000000000), UINT64_C(1000000000), 1);
+    if (observed == AZ_TIME_INVALID) return 0;
     return a->request_id == b->request_id && a->outcome == b->outcome && a->reason == b->reason &&
-           a->revision == b->revision && a->observed_ns == b->observed_ns;
+           a->revision == b->revision && observed == AZ_TIME_EQUAL;
 }
 static void complete(const az_command_completion *c, void *user)
 {
@@ -97,8 +100,16 @@ static int input(const az_event *event, void *user)
     az_deck_snapshot deck = { .size = sizeof deck };
     int rc = library->deck_snapshot(0, &deck);
     struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) || now.tv_sec < 0 || now.tv_nsec < 0 || now.tv_nsec >= 1000000000L ||
-        (uint64_t)now.tv_sec > (UINT64_MAX - (uint64_t)now.tv_nsec - UINT64_C(5000000000)) / UINT64_C(1000000000)) {
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+        status = AZ_FAILED;
+        return 1;
+    }
+    const int seconds = compare_timestamps(now.tv_sec, 0, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(now.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
+    const int range = compare_timestamps(now.tv_sec,
+        (UINT64_MAX - (uint64_t)now.tv_nsec - UINT64_C(5000000000)) / UINT64_C(1000000000), 1, 1000000000, 1);
+    if (seconds == AZ_TIME_INVALID || seconds == AZ_TIME_BEFORE || nanos == AZ_TIME_INVALID || nanos != AZ_TIME_BEFORE ||
+        range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) {
         status = AZ_FAILED;
         return 1;
     }

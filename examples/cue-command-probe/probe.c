@@ -53,13 +53,19 @@ static uint64_t cue_now(void)
     return CUE_TEST_NOW();
 #else
     struct timespec t = { 0 };
-    if (clock_gettime(CLOCK_MONOTONIC, &t) || t.tv_sec < 0) return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+    const int seconds = compare_timestamps(t.tv_sec, 0, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(t.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
+    if (seconds == AZ_TIME_INVALID || seconds == AZ_TIME_BEFORE || nanos == AZ_TIME_INVALID || nanos != AZ_TIME_BEFORE) return 0;
+    const int range = compare_timestamps((uint64_t)t.tv_sec, (UINT64_MAX - (uint64_t)t.tv_nsec) / UINT64_C(1000000000), 1, 1000000000, 1);
+    if (range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
     return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
 #endif
 }
 static int cue_worker_begin(uint64_t now)
 {
-    if (!now || now > UINT64_MAX - CUE_LIFETIME_NS) return 0;
+    const int range = compare_timestamps(now, UINT64_MAX - CUE_LIFETIME_NS, 1000000000, 1000000000, 1);
+    if (!now || range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
     cue.worker_started_ns = now;
     cue.worker_idle_deadline_ns = now + CUE_IDLE_NS;
     cue.worker_drain_deadline_ns = 0;
@@ -72,7 +78,8 @@ static void cue_note_activity(uint64_t now)
         if (!cue_worker_begin(now)) cue.io_failed = 1;
         return;
     }
-    if (!now || now > UINT64_MAX - CUE_IDLE_NS) {
+    const int range = compare_timestamps(now, UINT64_MAX - CUE_IDLE_NS, 1000000000, 1000000000, 1);
+    if (!now || range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) {
         cue.io_failed = 1;
         return;
     }
@@ -80,17 +87,21 @@ static void cue_note_activity(uint64_t now)
 }
 static int cue_worker_continue(uint64_t now)
 {
-    if (!now || !cue.worker_started_ns || compare_timestamps(now, cue.worker_started_ns, 1000000000, 1000000000, 1) == AZ_TIME_BEFORE) return 0;
+    const int started = compare_timestamps(now, cue.worker_started_ns, 1000000000, 1000000000, 1);
+    if (!now || !cue.worker_started_ns || started == AZ_TIME_INVALID || started == AZ_TIME_BEFORE) return 0;
+    const int idle = compare_timestamps(now, cue.worker_idle_deadline_ns, 1000000000, 1000000000, 1);
+    const int lifetime = compare_timestamps(now, cue.worker_started_ns + CUE_LIFETIME_NS, 1000000000, 1000000000, 1);
     int closing = cue.io_failed || cue.sequence >= 8192 || cue.worker_drain_deadline_ns ||
-                  compare_timestamps(now, cue.worker_idle_deadline_ns, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL ||
-                  compare_timestamps(now, cue.worker_started_ns + CUE_LIFETIME_NS, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL;
+                  idle == AZ_TIME_INVALID || idle >= AZ_TIME_EQUAL || lifetime == AZ_TIME_INVALID || lifetime >= AZ_TIME_EQUAL;
     if (!closing) return 1;
     if (!cue.pending) return 0;
     if (!cue.worker_drain_deadline_ns) {
-        if (now > UINT64_MAX - CUE_DRAIN_NS) return 0;
+        const int range = compare_timestamps(now, UINT64_MAX - CUE_DRAIN_NS, 1000000000, 1000000000, 1);
+        if (range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
         cue.worker_drain_deadline_ns = now + CUE_DRAIN_NS;
     }
-    return compare_timestamps(now, cue.worker_drain_deadline_ns, 1000000000, 1000000000, 1) == AZ_TIME_BEFORE;
+    const int draining = compare_timestamps(now, cue.worker_drain_deadline_ns, 1000000000, 1000000000, 1);
+    return draining != AZ_TIME_INVALID && draining == AZ_TIME_BEFORE;
 }
 static int cue_integer(const char *s, uint64_t *out)
 {
@@ -275,7 +286,7 @@ static int cue_handle(const struct cue_input *v)
         cue_emit("cancel", &cue.active, rc, (rc == AZ_OK || rc == AZ_PENDING || rc == AZ_STALE) && cue_result(&r, v->id) ? &r : NULL, 0);
         return rc;
     }
-    if (!v->id || !v->load || !v->timeout || compare_timestamps(v->timeout, UINT64_C(30000000000), 1000000000, 1000000000, 1) == AZ_TIME_AFTER || v->op < 1 || v->op > 26) {
+    if (!v->id || !v->load || !v->timeout || compare_timestamps(v->timeout, UINT64_C(30000000000), 1000000000, 1000000000, 1) == AZ_TIME_AFTER || v->op < AZ_CMD_LOOP_IN || v->op > AZ_CMD_CUE_LOOP_SET) {
         cue_emit("refused", v, AZ_INVALID, NULL, 0);
         return AZ_INVALID;
     }
@@ -295,7 +306,8 @@ static int cue_handle(const struct cue_input *v)
     }
     struct cue_input prepared = *v;
     prepared.submitted_ns = cue_now();
-    if (!prepared.submitted_ns || prepared.submitted_ns > UINT64_MAX - prepared.timeout) {
+    const int range = compare_timestamps(prepared.submitted_ns, UINT64_MAX - prepared.timeout, 1000000000, 1000000000, 1);
+    if (!prepared.submitted_ns || range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) {
         cue_emit("refused", v, AZ_INVALID, NULL, 0);
         return AZ_INVALID;
     }
@@ -384,7 +396,10 @@ static void *cue_worker(void *unused)
     uint64_t start = cue_now();
     for (unsigned n = 0; n < 144000; ++n) {
         uint64_t now = cue_now();
-        if (!start || !now || now < start || now - start >= CUE_LIFETIME_NS) break;
+        const int ordered = compare_timestamps(now, start, 1000000000, 1000000000, 1);
+        const int elapsed = compare_timestamps(now - start, CUE_LIFETIME_NS, 1000000000, 1000000000, 1);
+        if (!start || !now || ordered == AZ_TIME_INVALID || ordered == AZ_TIME_BEFORE ||
+            elapsed == AZ_TIME_INVALID || elapsed >= AZ_TIME_EQUAL) break;
         if (atomic_load_explicit(&cue.worker_stop, memory_order_acquire)) break;
         cue_worker_step();
         struct timespec t = { 0, 50000000 };

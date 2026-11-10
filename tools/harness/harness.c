@@ -102,10 +102,12 @@ int gettimeofday(struct timeval *__restrict tv, void *__restrict tz)
     return 0;
 }
 
+static void hs_advance(void);
 static void advance(int64_t ns)
 {
     mono_ns += ns;
     wall_ns += ns;
+    hs_advance();
 }
 
 /* ---- checks ----------------------------------------------------------------------------- */
@@ -983,6 +985,15 @@ static void end_lifetime(void)
 
 #include "track-data.h"
 #include "track-timing.h"
+#include "deck-status.h"
+
+/* The host has no native player store. Keep the public service callable so a
+ * mod can load its settings and gate native writes on command capabilities. */
+static int ht_native_cues(int deck, az_native_cue_snapshot *out)
+{
+    if (deck < 0 || deck >= 4 || !out || out->size < AZ_NATIVE_CUE_SNAPSHOT_V1_SIZE) return AZ_INVALID;
+    return AZ_UNSUPPORTED;
+}
 
 static const az_library_v1 HT_LIBRARY = {
     .abi = AZ_LIBRARY_ABI,
@@ -1006,10 +1017,13 @@ static const az_library_v1 HT_LIBRARY = {
     .command_poll = ht_command_poll,
     .command_cancel = ht_command_cancel,
     .command_release = ht_command_release,
+    .native_cues = ht_native_cues,
     .on_data_event = ht_on_data_event,
     .on_command_complete = ht_on_command_complete,
     .command_submit_async = ht_command_submit_async,
     .command_acknowledge = ht_command_acknowledge,
+    .on_deck_status = hs_subscribe,
+    .deck_status_release = hs_release,
 };
 static const az_library_v1 *ht_library_service(uint32_t abi)
 {
@@ -1088,6 +1102,7 @@ static const az_mod_v1 *mod;
 
 static int load_mod(void)
 {
+    hs_reset();
     if (handle && !keep_loaded) dlclose(handle);   /* the core never unloads a mod with a thread or tap */
     if (nthreads) end_lifetime();
     pthread_mutex_lock(&ht_mu);
@@ -1129,11 +1144,12 @@ static int load_mod(void)
     int rc = mod->init(&CORE);
     ctx = CTX_NONE;
     if (rc != 0) {
+        memset(hs_listeners, 0, sizeof hs_listeners);
         fail(K_INIT, "init returned %d", rc);
         return 0;
     }
     if (screens_registered > 1 || (screens_registered == 1 && !screen) ||
-        (screens_registered == 0 && nsurf == 0 && nlisten == 0 && !ht_data_fn && !ht_command_fn)) {
+        (screens_registered == 0 && nsurf == 0 && nlisten == 0 && !ht_data_fn && !ht_command_fn && !hs_count())) {
         fail(K_INIT, "init registered %d screens, %d surfaces, %d deck-event listeners",
              screens_registered, nsurf, nlisten);
         return 0;
@@ -1145,6 +1161,7 @@ static void call_tick(void)
 {
     drain_post();                       /* post_ui callbacks run on the UI thread, before tick */
     ht_callbacks();
+    hs_drain();
     if (!mod->tick) return;
     ctx = CTX_TICK;
     arm(1);
@@ -1153,13 +1170,21 @@ static void call_tick(void)
     ctx = CTX_NONE;
 }
 
+static int surface_visible(const struct az_surface *surface)
+{
+    int view = s_view();
+    unsigned active = AZ_VIEW_BIT(view);
+    if (view == AZ_VIEW_DECK && s_deck_count() == 2) active |= AZ_VIEW_TWO_DECKS;
+    return surface->shown && (surface->d.views & active);
+}
+
 /* Paint every surface that is shown on the current screen, as the core does when one is due. */
 static void paint_surfaces(int force)
 {
     frame_n = 0;
     for (int i = 0; i < nsurf; i++) {
         struct az_surface *sp = &surfs[i];
-        if (!sp->shown || !sp->placed || !(sp->d.views & AZ_VIEW_BIT(s_view()))) continue;
+        if (!surface_visible(sp) || !sp->placed) continue;
         if (!sp->dirty && !force) continue;
         sp->dirty = 0;
         cur_area = sp->r;
@@ -1212,7 +1237,7 @@ static int call_input(int kind, int dir, int x, int y)
         /* no page: taps go to the surface under them, the knob, click and BACK to the focused one */
         for (int i = 0; i < nsurf; i++) {
             az_rect r = surfs[i].r;
-            int on = surfs[i].shown && (surfs[i].d.views & AZ_VIEW_BIT(s_view()));
+            int on = surface_visible(&surfs[i]);
             if (kind == AZ_EV_TAP && on && x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h)
                 return surface_input(i, kind, dir, x, y);
             if (kind != AZ_EV_TAP && focus_surf == i)
@@ -1335,7 +1360,10 @@ static void soak(const struct soak *s, double max_rate)
         }
         pthread_mutex_unlock(&dmu);
         for (int deck = 0; deck < 4; deck++)
-            if (events[deck]) fire(deck, events[deck]);
+            if (events[deck]) {
+                hs_deck_changed((unsigned)deck, events[deck]);
+                fire(deck, events[deck]);
+            }
         if (Q.open && chance(20)) answer(chance(2));
 
         call_tick();
@@ -1463,6 +1491,7 @@ static int run(double max_rate, int functional)
     reset_world();
     D.count = 4;
     if (!load_mod()) goto report;
+    hs_scenario();
     for (size_t i = 0; i < sizeof SOAKS / sizeof SOAKS[0]; i++) {
         rng = 1000u + (unsigned)i;
         soak(&SOAKS[i], max_rate);

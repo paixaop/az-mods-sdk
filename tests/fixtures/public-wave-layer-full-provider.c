@@ -20,10 +20,13 @@ static void *full_probe_arg;
             exit(86);                                                           \
         }                                                                       \
     } while (0)
-static int full_pause(const struct timespec *t, struct timespec *left)
+static int full_wait(pthread_cond_t *condition, pthread_mutex_t *mutex, const struct timespec *deadline)
 {
-    if (__atomic_load_n(&full_stop, __ATOMIC_ACQUIRE)) pthread_exit(NULL);
-    return nanosleep(t, left);
+    if (__atomic_load_n(&full_stop, __ATOMIC_ACQUIRE)) {
+        FULL_CHECK(!pthread_mutex_unlock(mutex));
+        pthread_exit(NULL);
+    }
+    return pthread_cond_timedwait(condition, mutex, deadline);
 }
 static void *full_native_entry(void *unused)
 {
@@ -200,6 +203,7 @@ int main(int argc, char **argv)
     full_probe_fn(full_probe_arg);
     FULL_CHECK(full_native_fn && g_st_started);
     __atomic_store_n(&full_stop, 1, __ATOMIC_RELEASE);
+    st_worker_wake();
     FULL_CHECK(!pthread_join(full_thread, NULL));
     printf("FULL_PROVIDER_RESULT pass=%d opens=%d keys=%d queries=%d closes=%d accepted=%u released=%u outstanding=%d\n", full_pass, full_opens, full_keys, full_queries, full_closes, full_accepted, full_released, full_outstanding);
     FULL_CHECK(full_outstanding == 0 && full_accepted == full_released);

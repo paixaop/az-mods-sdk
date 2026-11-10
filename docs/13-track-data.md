@@ -1,13 +1,10 @@
 # Core library service development contract
 
-This shared core service implements the portable foundation of the Core SDK implementation plan.
-It is experimental and is off by default. To enable it on a development deck, create
+The snapshot, ticket and command providers described here use a development switch. To enable them on a development deck, create
 `/home/root/settings/azmod.track-data.on` before restarting EP147. Removing the flag and
 restarting disables the new provider. No generated address tables were changed.
 
-The current milestone is completing the existing native loop/cue commands through
-behavioral tests. All 26 IDs have development paths; broader live-state/source
-features remain follow-up work. Waveform processing and PRO DJ LINK are out of scope.
+All 28 command IDs have development paths for testing native loop and cue operations. Deck-status listeners are a separately negotiated part of the service and use their own firmware and source checks.
 The support matrix in [track-data support](14-track-data-support.md) records those gaps.
 
 ## Compatibility
@@ -15,8 +12,8 @@ The support matrix in [track-data support](14-track-data-support.md) records tho
 `az_core_v1` only grows at its end. Existing fields and `AZ_MOD_ABI` are unchanged. The core
 and SDK public headers are identical. `AZ_HAS(core, field)` is required for every new entry;
 then check `data_capabilities` and the individual component/field validity. The development
-baseline is core 1.2.3. A release minimum must be assigned when these services are released;
-setting `min_core` to stock 1.2.3 alone does not establish service availability.
+baseline is core 1.2.3. Deck-status subscriptions require core 1.2.6 and availability of both
+status members in the library service table. Gate individual fields on their support and validity.
 
 New v1 output structures require at least their complete v1 size, except `deck_snapshot`
 also accepts its earlier development prefix through `main_cue`. Too-small output buffers
@@ -261,6 +258,8 @@ corroborated against the supplied files.
 
 ## Observations, events and commands
 
+Subscribe to [real-time deck status](17-deck-status.md) for loaded-deck changes including physical loop edits. The stored ticket journal, legacy deck events and command completion each have their own catch-up and lifetime rules.
+
 `deck_snapshot` exposes authoritative loaded/empty state from the copied
 LoadedTrackInfo, together with the capture time and its observation revision. A sequence-lock
 collision yields no valid fields and can be retried. A capture revision is **not** a load
@@ -504,6 +503,50 @@ Selected operations require `AZ_COMMAND_NATIVE_CUE_IDS`; saved writes require
 `AZ_COMMAND_PERSIST`. Use native quantization and a valid native load generation.
 These are implementation paths, not a claim that every firmware/deck runtime test
 has passed. Test actual seek/loop/transport effects and saved reload/restart behavior.
+
+### Create cues at explicit source positions
+
+`az_native_cue_snapshot` appends an optional `source_rate_hz` clock. It is the
+owned native PlayerState source-position clock used by these creation
+operations. Its Hertz value is read independently of `POSITION.head.rate_hz`
+and the media file's metadata rate; equality is never assumed. Require a nonzero clock on
+the matching native load before planning or comparing newly created cue times;
+zero means unknown or an older provider. Do not substitute a fixed rate or the
+position clock. Saved entries are exposed in seconds, while the core retains
+and validates their native encoded sample clocks internally.
+
+The original v1 record prefix remains accepted as
+`AZ_NATIVE_CUE_SNAPSHOT_V1_SIZE`. Readers preserve caller size, copy at most the
+supplied capacity and leave unknown caller tails untouched. Initialize the full
+record and optional fields to zero before requesting it from an older core.
+
+`AZ_CMD_CUE_POINT_SET` (27) and `AZ_CMD_CUE_LOOP_SET` (28) create saved Hot or
+Memory cues without seeking or changing the working loop or retained main cue.
+Check their command capability bits before exposing automatic placement.
+
+Use `AZ_COMMAND_PERSIST | AZ_COMMAND_NATIVE_LOAD | AZ_COMMAND_NATIVE_CUE_IDS`,
+`AZ_QUANTIZE_NATIVE`, the current native load generation and the exact revision
+from `native_cues`. For Hot cues select `AZ_CUE_HOT` and `entry_id` 1–8; for Memory
+select `AZ_CUE_MEMORY` and `entry_id` 0. `position_s` is zero-based original-track
+seconds and can be zero. Loop creation also takes `end_s` after IN. Point creation
+leaves `end_s` zero. Resolve bar/beat quantization before submission. Color and a
+UTF-8 comment are saved with the cue; Memory colors use the native palette.
+Leave `beats` and `reserved` zero.
+Creation selects the nearest frame in the actual source-position clock, rounding
+half-frame ties forward. The native microsecond cache preserves that source frame.
+
+Creation refuses occupied Hot pads, duplicate Memory positions and more than
+ten Memory entries. A revision/load change refuses before dispatch. After native
+dispatch, failure can be `UNCERTAIN`: writes are not rolled back. Hot completion
+also waits for the native playable slot to hold the saved point/loop, with main
+cue, working loop and transport preserved. Refresh `native_cues` after each
+terminal callback before submitting another revision-fenced write.
+
+`HOT_CLEAR` additionally accepts the native-cue-ID flag and exact revision for
+an explicitly approved replacement workflow. Its original unfenced calling form
+remains supported. Application-level overwrite approval and automatic-placement
+policy belong to the mod; the SDK does not silently replace occupied pads.
+
 
 Transient loop operations 1–12 use the shared asynchronous native backend for
 both firmware profiles. Enable `azmod.track-data.on` and `azmod.native-load.on`

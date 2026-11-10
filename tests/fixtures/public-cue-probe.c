@@ -1,6 +1,7 @@
 /* Public client contract only; this fixture supplies no native cue evidence. */
 #define _POSIX_C_SOURCE 200809L
 #include "azmod-mod.h"
+#include "azmod-timestamps.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -25,7 +26,9 @@ static int fake_clock(clockid_t id, struct timespec *t)
 static int fake_sleep(const struct timespec *t, struct timespec *unused)
 {
     (void)unused;
-    assert(t->tv_sec == 1);
+    const int seconds = compare_timestamps(t->tv_sec, 1, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(t->tv_nsec, 0, 1000000000, 1000000000, 1);
+    assert(seconds != AZ_TIME_INVALID && seconds == AZ_TIME_EQUAL && nanos != AZ_TIME_INVALID && nanos == AZ_TIME_EQUAL);
     sleeps++;
     now_ns += 1000000000;
     changed_ns = now_ns;

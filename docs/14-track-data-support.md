@@ -1,6 +1,8 @@
 # Core SDK support and evidence matrix
 
-All 26 operation IDs have native development paths through the public library
+These tables cover snapshot, ticket and command services. See [Listening to a loaded deck](17-deck-status.md) for event subscriptions and their separate firmware coverage.
+
+All 28 operation IDs have native development paths through the public library
 service. Runtime support requires behavioral tests for each operation/profile;
 source presence alone is not a functional pass. Broader SDK gaps below are
 follow-up work unless a specific command needs that dependency.
@@ -173,6 +175,7 @@ header for exact operation arguments.
 | Set saved automatic activation | Previous loop disabled and selected loop enabled; partial writes cannot count as complete |
 | Trigger Hot cue | Selected point/loop, source seek and actual playing transport |
 | Create/replace Hot cue or loop | Stored point/loop bounds and color, with other cues preserved |
+| Create Hot/Memory point or loop at explicit source seconds (27/28) | Exact cue revision, preserved previous collection and correlated native storage reply; Hot creation also hydrates the playable slot and preserves main/working cues and transport |
 | Clear Hot cue | Selected slot absent, with other cues preserved |
 | Recall Memory cue or loop | Selected source position; a point pauses and disengages the loop, while a loop restores its bounds |
 | Create Memory cue or loop | Stored point/loop, correlated native reply and collection change |
@@ -312,3 +315,14 @@ logical deck 1 of the 2.00 deck, with no automatic restart. Bounds remain unavai
 that same run. This is a limited engagement result; other decks, paused cases and 1.30
 native runtime behavior remain open. The unified inspector is confirmed loaded through
 the shared ABI-1 service and displays real USB cues, beats, phrases and detail-window timing.
+
+The appended explicit-position creation commands (27/28) have focused host
+coverage for source-rate conversion, zero IN, loop ordering, revision fences,
+occupied pads, duplicate Memory cues and DSP Hot hydration. These host results
+do not extend the historical all-26 firmware acceptance above; firmware and
+reload acceptance for the new operations are tracked separately.
+
+Native cue snapshots expose the optional source-time creator clock in
+`source_rate_hz`; older-prefix callers remain supported. The POSITION engine
+clock is separate. Prefix/unknown-tail canaries,48000Hz clocks and empty-bank
+clock publication are covered by the focused host cue-orchestration fixture.

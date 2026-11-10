@@ -27,8 +27,8 @@ class FullProvider(unittest.TestCase):
         self.assertTrue(separator,'ordinary disk fixture main boundary')
         old='#define az_thread_create pthread_create'
         self.assertIn(old,prefix)
-        prefix=prefix.replace(old,'#include <time.h>\nstatic int full_create(pthread_t *,const pthread_attr_t *,void *(*)(void *),void *);\nstatic int full_pause(const struct timespec *,struct timespec *);\n#define az_thread_create full_create\n#define nanosleep full_pause')
-        prefix=prefix.replace('#undef pread','#undef nanosleep\n#undef pread',1)
+        prefix=prefix.replace(old,'#include <time.h>\nstatic int full_create(pthread_t *,const pthread_attr_t *,void *(*)(void *),void *);\nstatic int full_wait(pthread_cond_t *,pthread_mutex_t *,const struct timespec *);\n#define az_thread_create full_create\n#define pthread_cond_timedwait full_wait')
+        prefix=prefix.replace('#undef pread','#undef pthread_cond_timedwait\n#undef pread',1)
         fixture=ROOT/'tests/fixtures/public-wave-layer-full-provider.c'
         probe=pathlib.Path(os.environ.get('AZ_PUBLIC_WAVE_ENGINE_PROBE',ROOT/'examples/wave-layer-probe/probe.c'))
         with tempfile.TemporaryDirectory(prefix='sdk-full-wave-') as temp:

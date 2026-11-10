@@ -4,6 +4,15 @@
 #undef main
 #include <assert.h>
 #include <float.h>
+static void waveform_axis(const az_wave_snapshot *wave, uint32_t first, uint64_t source_rate)
+{
+    /* Every synthetic preview here spans the fixture's two-second track;
+     * detail uses 150 Hz, previews use their actual column count / 2. */
+    const int start = compare_timestamps(wave->start_s, (double)first / source_rate, 1, source_rate, 1);
+    const int extent = compare_timestamps(wave->seconds_per_column * wave->total_columns, 2.0, 1, source_rate, 1);
+    assert(start != AZ_TIME_INVALID && start == AZ_TIME_EQUAL &&
+           extent != AZ_TIME_INVALID && extent == AZ_TIME_EQUAL);
+}
 static void timing_precision(void)
 {
     az_beat beats[] = { { 0, 120, 1, 0 }, { .5, 120, 2, 0 }, { 1.5, 60, 3, 0 } };
@@ -68,7 +77,7 @@ static void invalid_envelopes(const az_library_v1 *library, const az_track_ref *
         case 1: invalid.version++; break;
         case 2: invalid.deck = 4; break;
         case 3: invalid.operation = 0; break;
-        case 4: invalid.operation = AZ_CMD_CUE_COLOR + 1; break;
+        case 4: invalid.operation = AZ_CMD_CUE_LOOP_SET + 1; break;
         case 5: invalid.request_id = 0; break;
         case 6: invalid.expected_load_generation = 0; break;
         case 7: invalid.deadline_ns = 0; break;
@@ -118,7 +127,7 @@ static void native_command_envelopes(const az_library_v1 *library)
     /* Valid requests remain unsupported by this synthetic provider. They must
      * not be rejected as malformed by an obsolete EXIT-only envelope. */
     for (unsigned deck = 0; deck < 4; ++deck) {
-        for (unsigned operation = AZ_CMD_LOOP_IN; operation <= AZ_CMD_CUE_COLOR; ++operation) {
+        for (unsigned operation = AZ_CMD_LOOP_IN; operation <= AZ_CMD_CUE_LOOP_SET; ++operation) {
             az_command_request request = {
                 .size = sizeof request,
                 .version = AZ_DATA_VERSION,
@@ -148,6 +157,13 @@ static void native_command_envelopes(const az_library_v1 *library)
                 request.entry_id = 1;
             }
             if (persistent) request.flags |= AZ_COMMAND_PERSIST;
+            if (operation == AZ_CMD_CUE_POINT_SET || operation == AZ_CMD_CUE_LOOP_SET) {
+                request.flags |= AZ_COMMAND_PERSIST | AZ_COMMAND_NATIVE_CUE_IDS;
+                request.expected_revision = 1;
+                request.entry_id = 0;
+                request.position_s = 1;
+                if (operation == AZ_CMD_CUE_LOOP_SET) request.end_s = 2;
+            }
             if (operation == AZ_CMD_LOOP_LENGTH) request.beats = 4;
             if (operation == AZ_CMD_LOOP_MOVE || operation == AZ_CMD_LOOP_ADJUST_IN) request.position_s = .1;
             if (operation == AZ_CMD_LOOP_ADJUST_OUT) request.end_s = .1;
@@ -347,6 +363,76 @@ static void asynchronous_boundary(void)
     drain_post();
     assert(initiation_calls == 1 && !handoff[1].owned && !handoff[1].id && handoff[1].status == AZ_UNSUPPORTED);
 }
+static struct status_log {
+    unsigned calls;
+    uint32_t kind;
+    uint64_t cut;
+    int64_t frame;
+    uint32_t rate;
+    int self_release;
+} status_log;
+static void status_callback(const az_deck_status_event_v1 *e, void *user)
+{
+    struct status_log *log = user;
+    assert(log == &status_log && e->deck == 0 && e->view->position && e->view->load);
+    const int publication = compare_timestamps(e->observed_ns, e->published_ns,
+                                               1000000000, 1000000000, 1);
+    assert(e->sequence > log->cut && publication != AZ_TIME_INVALID && publication <= AZ_TIME_EQUAL);
+    if (!log->calls) assert(e->kind == AZ_STATUS_INITIAL && e->view->load->state == AZ_STATUS_LOAD_LOADED);
+    ++log->calls;
+    log->cut = e->sequence;
+    log->kind = e->kind;
+    log->frame = e->view->position->head.samples;
+    log->rate = e->view->position->head.rate_hz;
+    if (log->self_release) assert(HT_LIBRARY.deck_status_release("fixture", e->subscription) == AZ_OK);
+}
+static void status_motion_fixture(void)
+{
+    Dl_info info;
+    assert(dladdr((void *)status_callback, &info));
+    mod_base = info.dli_fbase;
+    D.loaded[0] = 1;
+    hs_reset();
+    az_deck_watch_v1 w = { sizeof w, AZ_DATA_VERSION, 1, 1, AZ_STATUS_TOPIC(AZ_STATUS_POSITION) | AZ_STATUS_TOPIC(AZ_STATUS_LOAD) };
+    az_deck_subscription handle = 0;
+    ctx = CTX_INIT;
+    assert(HT_LIBRARY.on_deck_status("fixture", &w, status_callback, &status_log, &handle) == AZ_OK && handle && !status_log.calls);
+    ctx = CTX_NONE;
+    hs_drain();
+    assert(status_log.calls == 1 && status_log.kind == AZ_STATUS_INITIAL);
+    hs_motion(0, 0);
+    hs_drain();
+    int frame = compare_timestamps(status_log.frame, 0, status_log.rate, status_log.rate, 1);
+    assert(status_log.calls == 2 && frame != AZ_TIME_INVALID && frame == AZ_TIME_EQUAL && !hs_deadline);
+    uint64_t ready_cut = hs_decks[0].discrete;
+    for (int i = 1; i <= HS_HISTORY + 5; ++i) hs_motion(0, i);
+    hs_drain();
+    assert(status_log.calls == 2 && hs_deadline && hs_decks[0].discrete == ready_cut);
+    advance(NS - 1);
+    assert(status_log.calls == 2);
+    advance(1);
+    frame = compare_timestamps(status_log.frame, HS_HISTORY + 5, status_log.rate, status_log.rate, 1);
+    assert(status_log.calls == 3 && frame != AZ_TIME_INVALID && frame == AZ_TIME_EQUAL && !hs_deadline);
+    /* A pending frame from before eject cannot appear after the replacement. */
+    hs_motion(0, 15000);
+    hs_drain();
+    hs_deck_changed(0, AZ_DECK_EJECTED);
+    hs_drain();
+    assert(status_log.calls == 4 && !hs_deadline);
+    advance(NS);
+    assert(status_log.calls == 4);
+    status_log.self_release = 1;
+    hs_deck_changed(0, AZ_DECK_LOADED);
+    hs_drain();
+    assert(status_log.calls == 5 && !hs_count());
+    ctx = CTX_INIT;
+    assert(HT_LIBRARY.deck_status_release("fixture", handle) == AZ_STALE);
+    ctx = CTX_NONE;
+    hs_motion(0, 0);
+    hs_drain();
+    advance(NS);
+    assert(status_log.calls == 5);
+}
 int main(void)
 {
     timing_precision();
@@ -431,7 +517,8 @@ int main(void)
     assert(library->waveform_acquire("fixture", extra, &wave) == AZ_OK);
     assert(wave->track.size == sizeof wave->track);
     assert(wave->first_column == 150 && wave->column_count == 150 && wave->total_columns == 300);
-    assert(wave->start_s == 1 && wave->seconds_per_column == 1.0 / 150.0 && wave->columns[0] == 150);
+    waveform_axis(wave, 150, 150);
+    assert(wave->columns[0] == 150);
     assert(library->track_acquire("fixture", extra, &snapshot) == AZ_INVALID);
     assert(library->track_cancel("fixture", extra) == AZ_OK);
     assert(library->waveform_acquire("fixture", extra, &wave) == AZ_CANCELLED);
@@ -445,8 +532,7 @@ int main(void)
         assert(library->waveform_acquire("fixture", extra, &wave) == AZ_OK);
         assert(wave->encoding == encoding && wave->bytes_per_column == stride);
         assert(wave->total_columns == total && wave->column_count == (total == 300 ? 150u : 200u));
-        assert(wave->seconds_per_column == (total == 300 ? 1.0 / 150.0 : 2.0 / 1200.0));
-        assert(wave->start_s == 150 * wave->seconds_per_column);
+        waveform_axis(wave, 150, total / 2);
         assert(wave->data_bytes == wave->column_count * stride && wave->columns[0] == (150 * stride) % 256);
         uint64_t overlap_ticket;
         az_wave_query overlap = query;
@@ -466,7 +552,7 @@ int main(void)
         assert(library->waveform_acquire("fixture", extra, &wave) == AZ_OK);
         assert(wave->encoding == encoding && wave->bytes_per_column == 1 && wave->total_columns == total);
         assert(wave->column_count == total - 50 && wave->data_bytes == total - 50 && wave->columns[0] == 50);
-        assert(wave->seconds_per_column == 2.0 / total && wave->start_s == 50 * wave->seconds_per_column);
+        waveform_axis(wave, 50, total / 2);
         assert(wave->info.provenance == AZ_PROV_FILE);
         assert(library->track_release("fixture", extra) == AZ_OK);
     }
@@ -475,5 +561,6 @@ int main(void)
     assert(ht_command("fixture", &request, &result) == AZ_UNSUPPORTED && result.request_id == 99 && result.outcome == AZ_COMMAND_REJECTED);
     callbacks(library);
     asynchronous_boundary();
+    status_motion_fixture();
     return 0;
 }

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #define _POSIX_C_SOURCE 200809L
 #include "azmod-mod.h"
+#include "azmod-timestamps.h"
+#include <math.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -47,7 +49,12 @@ static int fake_clock(clockid_t c, struct timespec *t)
 static int fake_sleep(const struct timespec *t, struct timespec *unused)
 {
     (void)unused;
-    assert(t->tv_sec == 0 && t->tv_nsec > 0 && t->tv_nsec <= 100000000L);
+    const int seconds = compare_timestamps(t->tv_sec, 0, 1, 1000000000, 1);
+    const int positive = compare_timestamps(t->tv_nsec, 0, 1000000000, 1000000000, 1);
+    const int bound = compare_timestamps(t->tv_nsec, 100000000L, 1000000000, 1000000000, 1);
+    assert(seconds != AZ_TIME_INVALID && seconds == AZ_TIME_EQUAL &&
+           positive != AZ_TIME_INVALID && positive == AZ_TIME_AFTER &&
+           bound != AZ_TIME_INVALID && bound <= AZ_TIME_EQUAL);
     sleeps++;
     now_ns += (uint64_t)t->tv_nsec;
     return 0;
@@ -145,6 +152,8 @@ static int acquire(const char *id, uint64_t ticket, const az_wave_snapshot **out
         if (is("bounds")) s->view.first_column++;
         if (is("ref")) s->view.track.source_generation++;
         if (is("clock_axis")) s->view.seconds_per_column = 1.0 / 44100.0;
+        if (is("clock_axis_zero")) s->view.seconds_per_column = 0;
+        if (is("clock_axis_nan")) s->view.seconds_per_column = NAN;
         if (is("stride")) s->view.bytes_per_column = 3;
         if (is("bytes")) s->view.data_bytes--;
         if (is("availability")) s->view.info.availability = AZ_AVAIL_LOADING;

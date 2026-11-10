@@ -11,6 +11,7 @@ static int submits, acks, submit_status, malformed, drop, clock_bad;
 static az_command_completion_fn callback;
 static void *context;
 static az_command_request submitted;
+static const uint32_t source_rate_hz = 48000;
 static void (*job)(void *);
 static void *job_user;
 static void log_line(const char *id, const char *format, ...)
@@ -27,7 +28,7 @@ static const az_library_v1 *library(uint32_t abi) { return abi == AZ_LIBRARY_ABI
 static int caps(az_data_capabilities *out)
 {
     out->version = AZ_DATA_VERSION;
-    out->commands = (UINT64_C(1) << 27) - 2;
+    out->commands = (UINT64_C(1) << (AZ_CMD_CUE_LOOP_SET + 1)) - 2;
     return AZ_OK;
 }
 static int snapshot(int deck, az_deck_snapshot *out)
@@ -45,6 +46,7 @@ static int native_cues(int deck, az_native_cue_snapshot *out)
     out->version = AZ_DATA_VERSION;
     out->deck = (unsigned)deck;
     out->count = 0;
+    out->source_rate_hz = source_rate_hz;
     return AZ_OK;
 }
 static int submit(const char *id, const az_command_request *r, az_command_completion_fn fn, void *user, az_command_result *out)
@@ -157,6 +159,27 @@ int main(void)
         assert(cue_handle(&r) == submit_status && !cue.pending);
     }
     submit_status = AZ_OK;
+    /* Parse and submit both appended creation commands, then reject the first
+     * unknown operation before it reaches the public service. */
+    for (unsigned op = AZ_CMD_CUE_POINT_SET; op <= AZ_CMD_CUE_LOOP_SET; ++op) {
+        char input[512];
+        int length = snprintf(input, sizeof input, "v=1 pid=%ld action=submit id=%u deck=0 op=%u load=42 revision=7 timeout_ns=5000000000 flags=7 classification=1 entry_id=2 position=1.25 end=%s beats=0 rgb=1193046 comment_hex=437565\n", (long)getpid(), 50 + op, op, op == AZ_CMD_CUE_LOOP_SET ? "3.75" : "0");
+        struct cue_input r;
+        assert(length > 0 && (size_t)length < sizeof input && cue_parse(input, (size_t)length, &r));
+        assert(r.op == op);
+        int before = submits;
+        assert(cue_handle(&r) == AZ_OK && cue.pending && submits == before + 1);
+        assert(submitted.operation == op && submitted.flags == 7 && submitted.classification == AZ_CUE_HOT && submitted.entry_id == 2 && !strcmp(submitted.comment, "Cue"));
+        assert(compare_timestamps(submitted.position_s, 1.25, 1, source_rate_hz, 1) == AZ_TIME_EQUAL);
+        assert(compare_timestamps(submitted.end_s, op == AZ_CMD_CUE_LOOP_SET ? 3.75 : 0., 1, source_rate_hz, 1) == AZ_TIME_EQUAL);
+        notify(AZ_COMMAND_COMPLETION_TERMINAL, AZ_COMMAND_APPLIED, 1);
+        notify(AZ_COMMAND_COMPLETION_RELEASED, AZ_COMMAND_APPLIED, 1);
+        assert(!cue.pending);
+    }
+    struct cue_input unsupported = request(90);
+    unsupported.op = AZ_CMD_CUE_LOOP_SET + 1;
+    int creation_submits = submits;
+    assert(cue_handle(&unsupported) == AZ_INVALID && submits == creation_submits && !cue.pending);
     cue_flush();
     /* Best-effort handoff: a dropped job establishes no command ownership. */
     atomic_store(&cue.ui_ready, 1);

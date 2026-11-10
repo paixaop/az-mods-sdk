@@ -12,6 +12,9 @@ struct model_state {
     uint64_t revision, stamp;
 };
 static struct model_state actual_state, public_state;
+/* This command-plan double has a synthetic millisecond source clock. It
+ * tests serialized offsets and scheduling, not a native deck sample rate. */
+enum { MODEL_SOURCE_RATE = 1000 };
 static uint64_t actual_load = 42, applied_id, submit_times[32], applied_times[32];
 static unsigned operations[32], call_count, delay_polls, remaining_polls, observer_delay, observer_left, fail_at;
 static int immediate, unexpected_refusal;
@@ -69,7 +72,8 @@ static int batch_snapshot(int deck, az_deck_snapshot *out)
 static int batch_submit(const char *id, const az_command_request *r, az_command_completion_fn fn, void *user, az_command_result *out)
 {
     assert(!strcmp(id, ID) && r->flags == AZ_COMMAND_NATIVE_LOAD && r->quantization == AZ_QUANTIZE_NATIVE);
-    assert(call_count < 32 && r->deadline_ns == virtual_now + UINT64_C(10000000000));
+    const int deadline = compare_timestamps(r->deadline_ns, virtual_now + UINT64_C(10000000000), 1000000000, 1000000000, 1);
+    assert(call_count < 32 && deadline != AZ_TIME_INVALID && deadline == AZ_TIME_EQUAL);
     assert(!r->expected_revision && !r->classification && !r->entry_id && !r->rgb && !r->comment[0]);
     submitted = *r;
     completed = fn;
@@ -77,8 +81,14 @@ static int batch_submit(const char *id, const az_command_request *r, az_command_
     submit_times[call_count] = virtual_now;
     operations[call_count++] = r->operation;
     if (r->operation == AZ_CMD_LOOP_LENGTH) assert(r->beats == 8);
-    if (r->operation == AZ_CMD_LOOP_MOVE || r->operation == AZ_CMD_LOOP_ADJUST_IN) assert(r->position_s == .05);
-    if (r->operation == AZ_CMD_LOOP_ADJUST_OUT) assert(r->end_s == .05);
+    if (r->operation == AZ_CMD_LOOP_MOVE || r->operation == AZ_CMD_LOOP_ADJUST_IN) {
+        const int offset = compare_timestamps(r->position_s, .05, 1, MODEL_SOURCE_RATE, 1);
+        assert(offset != AZ_TIME_INVALID && offset == AZ_TIME_EQUAL);
+    }
+    if (r->operation == AZ_CMD_LOOP_ADJUST_OUT) {
+        const int offset = compare_timestamps(r->end_s, .05, 1, MODEL_SOURCE_RATE, 1);
+        assert(offset != AZ_TIME_INVALID && offset == AZ_TIME_EQUAL);
+    }
     if (r->expected_load_generation == UINT64_MAX && !unexpected_refusal) {
         result(out, r->request_id, AZ_COMMAND_REJECTED);
         out->reason = AZ_STALE;
@@ -104,7 +114,8 @@ static void batch_complete(void)
         return;
     }
     int outcome = terminal_outcome;
-    if (virtual_now >= submitted.deadline_ns || (fail_at && call_count == fail_at)) outcome = AZ_COMMAND_UNCERTAIN;
+    const int deadline = compare_timestamps(virtual_now, submitted.deadline_ns, 1000000000, 1000000000, 1);
+    if (deadline == AZ_TIME_INVALID || deadline >= AZ_TIME_EQUAL || (fail_at && call_count == fail_at)) outcome = AZ_COMMAND_UNCERTAIN;
     if (outcome == AZ_COMMAND_APPLIED) apply(&submitted);
     az_command_completion c = { .size = sizeof c, .version = AZ_DATA_VERSION, .kind = AZ_COMMAND_COMPLETION_TERMINAL, .settled = 1 };
     result(&c.result, submitted.request_id, outcome);
@@ -178,7 +189,8 @@ int main(void)
         settle_plan();
         assert(call_count == 15 && !memcmp(operations, matrix, sizeof matrix));
         done_status("PASS", 15);
-        assert(submit_times[2] >= applied_times[1] + UINT64_C(1000000000));
+        const int settled = compare_timestamps(submit_times[2], applied_times[1] + UINT64_C(1000000000), 1000000000, 1000000000, 1);
+        assert(settled != AZ_TIME_INVALID && settled >= AZ_TIME_EQUAL);
         v.deadline = virtual_now + UINT64_C(10000000000);
         assert(probe.highwater == 34 && probe_handle(&v) == AZ_STALE);
         end_case();

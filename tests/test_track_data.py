@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """The SDK harness must exercise the new public data contract without native firmware."""
+import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +32,41 @@ class TrackDataHarnessTests(unittest.TestCase):
             self.compile_fixture(self.root / "tests/fixtures/harness-track-data.c", binary)
             subprocess.run([str(binary)], check=True, capture_output=True, text=True)
 
+    def test_loop_watch_declares_the_status_service_minimum(self):
+        manifest = json.loads((self.root / "examples/loop-watch/azmod.json").read_text())
+        header = (self.root / "include/azmod-mod.h").read_text()
+        minimum = re.search(r'^#define AZ_DECK_STATUS_MIN_CORE "([0-9.]+)"', header, re.MULTILINE)
+        self.assertIsNotNone(minimum)
+        self.assertEqual(manifest["min_core"], minimum.group(1))
+
+    def test_deck_status_clients_use_the_same_callback_contract(self):
+        cxx = shutil.which("c++")
+        if not cxx:
+            self.skipTest("C++14 compiler unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            host = pathlib.Path(directory) / "status-host"
+            client = pathlib.Path(directory) / "status-client.so"
+            fixture = self.root / "tests/fixtures/deck-status-client.c"
+            self.compile_fixture(self.root / "tests/fixtures/harness-status-client.c", host)
+            transcripts = []
+            for compiler, language, standard in [(self.compiler, "c", "c11"), (cxx, "c++", "c++14")]:
+                for flags in [[], ["-DWITH_HELPERS"]]:
+                    with self.subTest(language=language, helpers=bool(flags)):
+                        subprocess.run([compiler, "-x", language, "-std=" + standard, "-Wall", "-Wextra",
+                                        "-Werror", "-O2", "-fPIC", "-fno-optimize-sibling-calls", "-shared",
+                                        "-I" + str(self.root / "include"), *flags, str(fixture), "-o", str(client)],
+                                       check=True, capture_output=True, text=True)
+                        run = subprocess.run([str(host), str(client)], capture_output=True, text=True)
+                        self.assertEqual(run.returncode, 0, run.stderr)
+                        transcripts.append(run.stdout.splitlines())
+            for rows in transcripts:
+                self.assertEqual(rows, transcripts[0])
+                self.assertEqual(rows.count("released"), 1)
+                events = [row.split() for row in rows if row.startswith("event ")]
+                self.assertEqual([int(row[3]) for row in events], [-1, 0, 0, 1, 0, 1, 1, 1])
+                self.assertEqual([row[4] for row in events[2:]], ["0.0"] * 6)
+                self.assertEqual(sum(row[5] != "-1" for row in events), 2)
+
     def test_sanitized_provider_contract(self):
         compiler = shutil.which("clang")
         if not compiler:
@@ -57,7 +94,7 @@ class TrackDataHarnessTests(unittest.TestCase):
             root = pathlib.Path(directory)
             harness = root / "tools/harness"
             harness.mkdir(parents=True)
-            for filename in ("harness.c", "track-timing.h"):
+            for filename in ("harness.c", "track-timing.h", "deck-status.h"):
                 shutil.copyfile(self.root / "tools/harness" / filename, harness / filename)
             fixture = root / "tests/fixtures/harness-track-data.c"
             fixture.parent.mkdir(parents=True)

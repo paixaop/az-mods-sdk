@@ -1,5 +1,7 @@
 # API reference (ABI version 1)
 
+For filtered live deck callbacks and optional event readers, see [Listening to a loaded deck](17-deck-status.md).
+
 Everything a mod can use is declared in [`include/azmod-mod.h`](https://github.com/Kyle-Hosman/az-mods-sdk/blob/main/include/azmod-mod.h),
 along with what each piece does, where it may be called from and how fast it must return.
 Where the header's comments and this page disagree, the header is correct; an issue on the SDK
@@ -613,7 +615,7 @@ meanwhile.
 - `size`.
 - `layer`: `AZ_LAYER_OVER_EP147`, above the deck's screen and below the Mod Menu, or
   `AZ_LAYER_TOP`, above the Mod Menu.
-- `views`: a mask of `AZ_VIEW_BIT(...)`.
+- `views`: a mask of `AZ_VIEW_BIT(...)`. `AZ_VIEW_TWO_DECKS` (core 1.2.6) limits a surface to the two-deck waveform layout. Use it in place of `AZ_VIEW_BIT(AZ_VIEW_DECK)` for a surface with two-deck geometry. `view()` reports `AZ_VIEW_DECK` for either deck layout.
 - `on_paint(d, area, user)`: draws with the drawing services only, inside `area`.
 - `on_input(ev, user)`: gets taps inside the surface and, while it has focus, the knob, its
   click and BACK. Return `1` if handled; returning `0` for `AZ_EV_BACK` gives the knob back to
@@ -1114,3 +1116,6 @@ capability. They copy and acknowledge `TERMINAL`, then retain context through `R
 There is no command-status polling fallback or release retry. Check each member with
 `AZ_LIB_HAS`. See [callback delivery](13-track-data.md#callback-delivery) and
 [asynchronous command ownership](13-track-data.md#asynchronous-command-ownership).
+
+Background analysis workers use the optional [track analysis service](18-track-analysis.md)
+to obtain read-only source locators and publish missing USB beat/phrase data.

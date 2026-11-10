@@ -93,10 +93,12 @@ nav:
       - SDK architecture: architecture.md
       - API reference: API.md
       - Shared library service: 13-track-data.md
+      - Real-time deck listeners: 17-deck-status.md
       - Track data support matrix: 14-track-data-support.md
       - Track data refactor proposal: track-data-refactor-spec.md
       - Analysis evidence: 15-analysis-evidence.md
       - Native investigation: 16-native-evidence.md
+      - Track analysis: 18-track-analysis.md
       - Mod Menu keys: MOD-MENU-KEYS.md
       - The deck program: reference.md
       - Addresses: reference-addresses.md

@@ -281,7 +281,7 @@ static int ht_command(const char *id, const az_command_request *r, az_command_re
 {
     check_id(id, "command_submit");
     if (!r || ht_record_size(r) < sizeof *r || r->version != 1 || !out || ht_record_size(out) < sizeof *out || r->deck > 3 ||
-        r->operation < AZ_CMD_LOOP_IN || r->operation > AZ_CMD_CUE_COLOR || !r->request_id ||
+        r->operation < AZ_CMD_LOOP_IN || r->operation > AZ_CMD_CUE_LOOP_SET || !r->request_id ||
         !r->expected_load_generation || !r->deadline_ns || r->quantization > AZ_QUANTIZE_ON ||
         (r->flags & ~(AZ_COMMAND_PERSIST | AZ_COMMAND_NATIVE_LOAD | AZ_COMMAND_NATIVE_CUE_IDS)) ||
         ((r->flags & AZ_COMMAND_NATIVE_CUE_IDS) &&

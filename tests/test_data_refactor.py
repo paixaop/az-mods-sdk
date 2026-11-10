@@ -41,6 +41,11 @@ class DataRefactor(unittest.TestCase):
     def test_readers_asan_ubsan(self):
         self.run_fixture('data-helpers.c', sanitize=True)
 
+    def test_deck_status_readers(self):
+        self.run_fixture('deck-status-helpers.c')
+        self.run_fixture('deck-status-helpers.c', cxx=True)
+        self.run_fixture('deck-status-helpers.c', sanitize=True)
+
     def test_authoritative_core_clock(self):
         checkout = pathlib.Path(os.environ.get('AZ_CORE_TEST_ROOT', ROOT.parent/'xdj-az-mods'))
         core = checkout/'src/common'
@@ -66,8 +71,8 @@ class DataRefactor(unittest.TestCase):
     def test_regression_controls(self):
         variants = [
             ('live.c', 'inspector-live.c',
-             'int rc = library->deck_snapshot(deck, &s);',
-             'int rc = library->deck_snapshot(deck, &s); if (rc != AZ_OK) continue;'),
+             'memset(out, 0, sizeof lines[e->deck]);',
+             '(void)out;'),
             ('cues.c', 'inspector-cues.c',
              'if (c->valid & AZ_CUE_START)', 'if (1)'),
             ('control.c', 'inspector-control.c',

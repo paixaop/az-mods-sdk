@@ -2,6 +2,7 @@
  * supplies loader/auth and typed native-receipt boundaries, not capabilities. */
 #define _POSIX_C_SOURCE 200809L
 #include <time.h>
+#include "azmod-timestamps.h"
 #include SDK_CUE_PROVIDER_FIXTURE
 #include <stdarg.h>
 #include <stdlib.h>
@@ -47,7 +48,10 @@ static void client_log(const char *id, const char *format, ...)
 static int client_sleep(const struct timespec *delay, struct timespec *unused)
 {
     (void)unused;
-    assert(delay->tv_sec == 1);
+    const int seconds = compare_timestamps(delay->tv_sec, 1, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(delay->tv_nsec, 0, 1000000000, 1000000000, 1);
+    assert(seconds != AZ_TIME_INVALID && seconds == AZ_TIME_EQUAL &&
+           nanos != AZ_TIME_INVALID && nanos == AZ_TIME_EQUAL);
     if (client_mode == 3) g_cm[0].state = 0; /* Real dispatcher must refuse disabled owners. */
     for (int d = 0; d < 4; d++) next(d, 100u + (unsigned)d, 1);
     sdk_deck_tick(200);
@@ -103,7 +107,9 @@ int main(int argc, char **argv)
         az_deck_snapshot s = { .size = sizeof s };
         assert(sd_deck_snapshot_v1(d, &s) == AZ_OK);
         struct probe_cue_record v = probe_cue_values(d, probe_now(), AZ_OK, &s);
-        assert(v.available && v.unit == s.cue_unit_generation && v.revision == s.cue_revision && v.observed_ns == s.cue_observed_ns);
+        const int observed = compare_timestamps(v.observed_ns, s.cue_observed_ns, 1000000000, 1000000000, 1);
+        assert(v.available && v.unit == s.cue_unit_generation && v.revision == s.cue_revision &&
+               observed != AZ_TIME_INVALID && observed == AZ_TIME_EQUAL);
         assert(v.unit == 100u + (unsigned)d && v.revision == 1 && !v.source_load);
     }
     puts("PASS real cue provider -> actual client empty init -> GUI callback/revision; lifecycle guards intact");

@@ -50,9 +50,13 @@ struct probe_native_record {
 static uint64_t probe_now(void)
 {
     struct timespec time = { 0 };
-    if (clock_gettime(CLOCK_MONOTONIC, &time) || time.tv_sec < 0 || time.tv_nsec < 0 || time.tv_nsec >= 1000000000L) return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &time)) return 0;
+    const int nonnegative = compare_timestamps(time.tv_sec, 0, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(time.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
+    if (nonnegative == AZ_TIME_INVALID || nonnegative == AZ_TIME_BEFORE || nanos == AZ_TIME_INVALID || nanos != AZ_TIME_BEFORE) return 0;
     uint64_t seconds = (uint64_t)time.tv_sec;
-    if (seconds > (UINT64_MAX - (uint64_t)time.tv_nsec) / UINT64_C(1000000000)) return 0;
+    const int range = compare_timestamps(seconds, (UINT64_MAX - (uint64_t)time.tv_nsec) / UINT64_C(1000000000), 1, 1000000000, 1);
+    if (range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
     return seconds * UINT64_C(1000000000) + (uint64_t)time.tv_nsec;
 }
 static _Atomic uint64_t probe_cue_events[4];

@@ -8,7 +8,7 @@ static const az_core_v1 *core;
 static const library_page *const pages[] = {
     &library_page_cues, &library_page_live, &library_page_analysis, &library_page_control
 };
-static const char *const titles[] = { "Cues", "Live", "Analysis", "Control" };
+static const char *const titles[] = { "USB cues", "Live decks", "USB analysis", "Control" };
 static unsigned active;
 static az_rect tabs;
 static uint64_t last_redraw;
@@ -47,7 +47,8 @@ static int input(const az_event *ev, void *user)
 }
 static void tick(void)
 {
-    for (unsigned i = 0; i < 4; i++) pages[i]->tick();
+    for (unsigned i = 0; i < 4; i++)
+        if (pages[i]->tick) pages[i]->tick();
     struct timespec now;
     if (!clock_gettime(CLOCK_MONOTONIC, &now)) {
         uint64_t ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;

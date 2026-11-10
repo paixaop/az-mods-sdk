@@ -49,7 +49,8 @@ static inline int probe_completion_valid(const az_command_completion *c, uint64_
 }
 static inline int probe_terminal_equal(const az_command_result *a, const az_command_result *b)
 {
+    const int observed = compare_timestamps(a->observed_ns, b->observed_ns, 1000000000, 1000000000, 1);
     return a->request_id == b->request_id && a->outcome == b->outcome && a->reason == b->reason &&
-           a->revision == b->revision && a->observed_ns == b->observed_ns;
+           a->revision == b->revision && observed != AZ_TIME_INVALID && observed == AZ_TIME_EQUAL;
 }
 #endif

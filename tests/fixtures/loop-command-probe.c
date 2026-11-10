@@ -272,7 +272,10 @@ int main(void)
     v = input(6);
     v.position = .25;
     v.op = AZ_CMD_LOOP_MOVE;
-    assert(probe_handle(&v) == AZ_OK && submitted.position_s == .25 && submitted.operation == AZ_CMD_LOOP_MOVE);
+    assert(probe_handle(&v) == AZ_OK && submitted.operation == AZ_CMD_LOOP_MOVE);
+    /* This request-only double uses a synthetic millisecond source clock. */
+    const int offset = compare_timestamps(submitted.position_s, .25, 1, 1000, 1);
+    assert(offset != AZ_TIME_INVALID && offset == AZ_TIME_EQUAL);
     drain();
     struct probe_input snap = { .pid = (uint64_t)getpid(), .deck = 3 };
     strcpy(snap.action, "snapshot");

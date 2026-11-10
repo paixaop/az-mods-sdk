@@ -101,7 +101,7 @@ class PublicStateProbe(unittest.TestCase):
         variants = [
             ("validity", "if (s->valid & AZ_LIVE_MASTER_TEMPO) value.mt = s->master_tempo;", "value.mt = s->master_tempo;", 1),
             ("deck", "probe_library->deck_snapshot(deck, &snapshot)", "probe_library->deck_snapshot(1, &snapshot)", 1),
-            ("clock", "if (clock_gettime(CLOCK_MONOTONIC, &time) ||", "if ((clock_gettime(CLOCK_MONOTONIC, &time), 0) ||", 1),
+            ("clock", "if (clock_gettime(CLOCK_MONOTONIC, &time)) return 0;", "(void)clock_gettime(CLOCK_MONOTONIC, &time);", 1),
             ("budget", "records < PROBE_MAX_RECORDS", "records < PROBE_MAX_RECORDS + 1", 8),
         ]
         for name, old, new, count in variants:

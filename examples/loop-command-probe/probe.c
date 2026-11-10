@@ -66,9 +66,13 @@ static uint64_t probe_now(void)
     return PROBE_TEST_NOW();
 #else
     struct timespec ts = { 0 };
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) || ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L) return 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
+    const int seconds = compare_timestamps(ts.tv_sec, 0, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(ts.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
+    if (seconds == AZ_TIME_INVALID || seconds == AZ_TIME_BEFORE || nanos == AZ_TIME_INVALID || nanos != AZ_TIME_BEFORE) return 0;
     uint64_t sec = (uint64_t)ts.tv_sec;
-    return sec <= (UINT64_MAX - (uint64_t)ts.tv_nsec) / UINT64_C(1000000000)
+    const int range = compare_timestamps(sec, (UINT64_MAX - (uint64_t)ts.tv_nsec) / UINT64_C(1000000000), 1, 1000000000, 1);
+    return range != AZ_TIME_INVALID && range <= AZ_TIME_EQUAL
                ? sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec
                : 0;
 #endif
@@ -300,7 +304,8 @@ static int probe_snapshot(uint32_t deck, az_deck_snapshot *snapshot, uint64_t no
     int rc = probe.library->deck_snapshot((int)deck, snapshot);
     uint64_t query = probe_now();
     uint64_t generation = 0;
-    return query >= now && rc == AZ_OK && az_read_native_load_target(snapshot, deck, query, &generation);
+    const int order = compare_timestamps(query, now, 1000000000, 1000000000, 1);
+    return order != AZ_TIME_INVALID && order >= AZ_TIME_EQUAL && rc == AZ_OK && az_read_native_load_target(snapshot, deck, query, &generation);
 }
 static void probe_plan_snapshot(void)
 {
@@ -324,9 +329,10 @@ static int probe_plan_start(const struct probe_input *v)
         probe_emit("refused", v, AZ_BUSY, NULL);
         return AZ_BUSY;
     }
+    const int range = compare_timestamps(now, UINT64_MAX - UINT64_C(180000000000), 1000000000, 1000000000, 1);
     if (!v->id || v->id > UINT64_MAX - 15 || v->deck >= 4 || v->op || !v->load || v->position || v->end || v->beats ||
         compare_timestamps(v->deadline, now, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL || compare_timestamps(v->deadline - now, UINT64_C(30000000000), 1000000000, 1000000000, 1) == AZ_TIME_AFTER ||
-        (kind == PLAN_REFUSALS && v->load != UINT64_MAX) || now > UINT64_MAX - UINT64_C(180000000000)) {
+        (kind == PLAN_REFUSALS && v->load != UINT64_MAX) || range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) {
         probe_emit("refused", v, AZ_INVALID, NULL);
         return AZ_INVALID;
     }
@@ -452,7 +458,9 @@ static void probe_plan_step(void)
     probe.plan.before_unit = before.loop_unit_generation;
     probe.plan.before_revision = before.loop_revision;
     uint64_t dispatch = probe_now();
-    if (!dispatch || compare_timestamps(dispatch, probe.plan.overall_deadline, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL || dispatch > UINT64_MAX - UINT64_C(10000000000)) {
+    const int range = compare_timestamps(dispatch, UINT64_MAX - UINT64_C(10000000000), 1000000000, 1000000000, 1);
+    if (!dispatch || compare_timestamps(dispatch, probe.plan.overall_deadline, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL ||
+        range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) {
         probe_plan_finish("INCOMPLETE");
         return;
     }

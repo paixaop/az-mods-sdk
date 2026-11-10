@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #define _POSIX_C_SOURCE 200809L
 #include "azmod-mod.h"
+#include "azmod-timestamps.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -36,7 +37,10 @@ static int __attribute__((unused)) probe_clock(clockid_t clock, struct timespec 
 static int __attribute__((unused)) probe_sleep(const struct timespec *in, struct timespec *out)
 {
     (void)out;
-    assert(in->tv_sec == 1 && in->tv_nsec == 0);
+    const int seconds = compare_timestamps(in->tv_sec, 1, 1, 1000000000, 1);
+    const int nanos = compare_timestamps(in->tv_nsec, 0, 1000000000, 1000000000, 1);
+    assert(seconds != AZ_TIME_INVALID && seconds == AZ_TIME_EQUAL &&
+           nanos != AZ_TIME_INVALID && nanos == AZ_TIME_EQUAL);
     sleeps++;
     now_ns += UINT64_C(1000000000);
     return 0;
@@ -164,8 +168,10 @@ static void tempo_value_contracts(void)
     for (int deck = 0; deck < 4; ++deck) {
         az_deck_snapshot s = { .size = sizeof s, .version = AZ_DATA_VERSION, .deck = (unsigned)deck, .valid = AZ_LIVE_TEMPO | AZ_LIVE_TEMPO_SLIDER_LOCKED, .tempo = 123.45, .tempo_state_generation = 30u + (unsigned)deck, .tempo_revision = 40, .tempo_observed_ns = 50, .tempo_lock_unit_generation = 60u + (unsigned)deck, .tempo_lock_revision = 70, .tempo_lock_observed_ns = 80, .tempo_slider_locked = deck & 1 };
         struct probe_tempo_record v = probe_tempo_values(deck, 100, AZ_OK, &s);
-        assert(v.tempo_valid && v.tempo == 123.45 && v.tempo_state == 30u + (unsigned)deck && v.tempo_rev == 40 && v.tempo_ns == 50);
-        assert(v.slider_valid && v.slider_locked == (deck & 1) && v.slider_unit == 60u + (unsigned)deck && v.slider_rev == 70 && v.slider_ns == 80);
+        const int tempo_time = compare_timestamps(v.tempo_ns, 50, 1000000000, 1000000000, 1);
+        const int slider_time = compare_timestamps(v.slider_ns, 80, 1000000000, 1000000000, 1);
+        assert(v.tempo_valid && v.tempo == 123.45 && v.tempo_state == 30u + (unsigned)deck && v.tempo_rev == 40 && tempo_time != AZ_TIME_INVALID && tempo_time == AZ_TIME_EQUAL);
+        assert(v.slider_valid && v.slider_locked == (deck & 1) && v.slider_unit == 60u + (unsigned)deck && v.slider_rev == 70 && slider_time != AZ_TIME_INVALID && slider_time == AZ_TIME_EQUAL);
         struct probe_tempo_record newer = v;
         newer.tempo_rev++;
         newer.tempo_ns++;

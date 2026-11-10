@@ -53,14 +53,17 @@ extern int slip_capture_test_clock_gettime(clockid_t, struct timespec *);
 static int capture_time(uint64_t *out)
 {
     struct timespec now;
-    if (capture_clock(CLOCK_MONOTONIC, &now) || now.tv_sec < 0 || now.tv_nsec < 0 ||
-        now.tv_nsec >= 1000000000L) return 0;
+    if (capture_clock(CLOCK_MONOTONIC, &now)) return 0;
+    const int nonnegative = compare_timestamps(now.tv_sec, 0, 1, 1000000000, 1);
+    const int subsecond = compare_timestamps(now.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
+    if (nonnegative == AZ_TIME_INVALID || nonnegative == AZ_TIME_BEFORE || subsecond == AZ_TIME_INVALID || subsecond != AZ_TIME_BEFORE) return 0;
     uint64_t seconds = (uint64_t)now.tv_sec, nanos = (uint64_t)now.tv_nsec;
-    if (seconds > UINT64_MAX / UINT64_C(1000000000)) return 0;
+    const int range = compare_timestamps(seconds, (UINT64_MAX - nanos) / UINT64_C(1000000000), 1, 1000000000, 1);
+    if (range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
     uint64_t base = seconds * UINT64_C(1000000000);
-    if (nanos > UINT64_MAX - base) return 0;
     *out = base + nanos;
-    return *out && compare_timestamps(*out, last_ns, 1000000000, 1000000000, 1) >= AZ_TIME_EQUAL;
+    const int order = compare_timestamps(*out, last_ns, 1000000000, 1000000000, 1);
+    return *out && order != AZ_TIME_INVALID && order >= AZ_TIME_EQUAL;
 }
 #undef capture_clock
 

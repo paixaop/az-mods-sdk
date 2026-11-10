@@ -145,9 +145,10 @@ static void we_baseline(void)
     WE_CHECK(st_wave_acquire(&e, 3, ticket, &v) == AZ_PENDING && !v, "real pre-worker pending");
     we_pump(&e);
     WE_CHECK(st_wave_acquire(&e, 3, ticket, &v) == AZ_OK && v, "real worker raw publication");
+    const int raw_extent = compare_timestamps(v->seconds_per_column * v->total_columns, 1000.0 / 150.0, 1, 150, 1);
     WE_CHECK(v->total_columns == 1000 && v->column_count == 12 && v->data_bytes == 36 &&
                  v->bytes_per_column == 3 && v->info.provenance == AZ_PROV_FILE &&
-                 v->seconds_per_column == 1.0 / 150.0 && !memcmp(v->columns, we_raw, sizeof we_raw),
+                 raw_extent != AZ_TIME_INVALID && raw_extent == AZ_TIME_EQUAL && !memcmp(v->columns, we_raw, sizeof we_raw),
              "real raw file/axis baseline");
     WE_CHECK(st_release(&e, 3, ticket, 0) == AZ_OK, "baseline raw release");
     ticket = 0;
@@ -155,8 +156,10 @@ static void we_baseline(void)
     q.encoding = AZ_WAVE_PWV7_LAYERED_RAW;
     WE_CHECK(st_request_with_wave(&e, 3, &we_ref, ST_DETAIL, &q, &ticket) == AZ_OK && ticket, "real layered queue acceptance");
     we_pump(&e);
-    WE_CHECK(st_wave_acquire(&e, 3, ticket, &v) == AZ_OK && v && v->bytes_per_column == 6 &&
-                 v->data_bytes == 72 && v->info.provenance == AZ_PROV_DERIVED && v->seconds_per_column == 1.0 / 150.0,
+    WE_CHECK(st_wave_acquire(&e, 3, ticket, &v) == AZ_OK && v, "real worker layered publication");
+    const int layered_extent = compare_timestamps(v->seconds_per_column * v->total_columns, 1000.0 / 150.0, 1, 150, 1);
+    WE_CHECK(v->bytes_per_column == 6 && v->data_bytes == 72 && v->info.provenance == AZ_PROV_DERIVED &&
+                 layered_extent != AZ_TIME_INVALID && layered_extent == AZ_TIME_EQUAL,
              "real layered publication/derived baseline");
     for (unsigned i = 0; i < 12; i++) WE_CHECK(we_inverse(we_raw[i], v->columns + i * 6), "real layered reserved/inverse baseline");
     const uint8_t first[6] = { 0x63, 0x38, 255, 128, 1, 0 };
@@ -226,7 +229,12 @@ static const az_library_v1 *we_service(uint32_t abi)
 static int we_sleep(const struct timespec *t, struct timespec *remaining)
 {
     (void)remaining;
-    WE_CHECK(we_in_probe && t->tv_sec == 0 && t->tv_nsec > 0 && t->tv_nsec <= 100000000L, "bounded actual requested sleep");
+    const int seconds = compare_timestamps(t->tv_sec, 0, 1, 1000000000, 1);
+    const int positive = compare_timestamps(t->tv_nsec, 0, 1000000000, 1000000000, 1);
+    const int bound = compare_timestamps(t->tv_nsec, 100000000L, 1000000000, 1000000000, 1);
+    WE_CHECK(we_in_probe && seconds != AZ_TIME_INVALID && seconds == AZ_TIME_EQUAL &&
+             positive != AZ_TIME_INVALID && positive == AZ_TIME_AFTER &&
+             bound != AZ_TIME_INVALID && bound <= AZ_TIME_EQUAL, "bounded actual requested sleep");
     we_sleeps++;
     we_ns += (uint64_t)t->tv_nsec;
     if (!we_is("permanent") && (!we_is("delayed") || we_pending >= 27)) we_pump(&we_engine);
@@ -281,7 +289,9 @@ int main(int argc, char **argv)
            we_mode, we_calls, we_accepted, we_released, owned, we_pending, we_sleeps, we_loads, we_pumps, we_large, (unsigned long long)we_ns);
     fflush(stdout);
     st_destroy(&we_engine);
-    WE_CHECK(!owned && we_accepted == we_released && we_logs && we_calls <= 257 && we_sleeps <= 256 && we_ns < UINT64_C(31000000000), "finite budgets and real accepted-ticket cleanup");
+    const int elapsed = compare_timestamps(we_ns, UINT64_C(31000000000), 1000000000, 1000000000, 1);
+    WE_CHECK(!owned && we_accepted == we_released && we_logs && we_calls <= 257 && we_sleeps <= 256 &&
+             elapsed != AZ_TIME_INVALID && elapsed == AZ_TIME_BEFORE, "finite budgets and real accepted-ticket cleanup");
     const char *last = we_lines[we_logs - 1];
     if (we_is("immediate") || we_is("delayed")) {
         if (we_is("immediate") && !strstr(last, "status=PASS")) {

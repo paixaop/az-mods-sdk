@@ -1,0 +1,18 @@
+{
+  "azmod": 1,
+  "id": "loop-watch",
+  "name": "Loop Watch",
+  "version": "0.1.0",
+  "author": "AZ-MODS contributors",
+  "summary": "Observe physical loop changes on all four decks",
+  "description": "Logs retained loop points and working engagement through one read-only deck listener. Runs without a mod tick, screen, worker, command or private firmware hook.",
+  "category": "tools",
+  "license": "GPL-3.0-only",
+  "source": "https://github.com/Kyle-Hosman/az-mods-sdk",
+  "api": 1,
+  "firmware": [
+    "any"
+  ],
+  "hooks": false,
+  "min_core": "1.2.6"
+}
