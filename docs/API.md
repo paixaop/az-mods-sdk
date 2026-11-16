@@ -265,6 +265,11 @@ addresses. See [Hooks and firmware tags](05-hooks-and-firmware.md).
 Gives your mod a page under Mod Menu > Community Mods > Installed > your mod. Pass a pointer
 to a `static const` struct: the core keeps the pointer.
 
+Core 1.2.8 shows the selected mod's details and a **Settings** button in Installed.
+Pressing Settings (or the browse knob on the selected mod) slides its page across the
+full content width. Simple controls appear directly below the standard mod details.
+Use `AZ_SCREEN_DEDICATED` for a complex editor that needs the whole content area.
+
 - Returns `0` on success, or non-zero if called outside `init` or if `scr` has no `on_draw`
   or too small a `size`.
 
@@ -752,8 +757,10 @@ static void on_deck(int deck, int what, void *user)
 
 #### Feedback and threads
 
-"The UI thread" is the core's thread that runs `tick`, your pages, surfaces and row
-callbacks.
+"The UI thread" is the core's overlay thread that runs `tick`, your pages, surfaces and row
+callbacks. EP147's JUCE message thread is a separate thread. `post_ui` targets the overlay
+thread too; it does not make direct access to native firmware UI objects safe. Use the
+public SDK service for the operation you need.
 
 **`void banner(const char *id, const char *text, int ms)`**
 
@@ -1042,6 +1049,17 @@ static const az_screen_v1 SCREEN = {
 - `on_enter(user)`: the page has become active (reset its highlight, for example). May be
   `NULL`.
 - `user`: handed back to every callback.
+- `flags` (core 1.2.8): `0` for controls on the standard mod page;
+  `AZ_SCREEN_DEDICATED` for a separate editor opened by **Settings**. The editor gets
+  the full area below the core's header, without the installed list or mod details.
+  A `SCREEN` menu row opens that editor directly. BACK first goes to `on_input`, then
+  returns to the page or menu row that opened it when the callback returns `0`.
+  Set `min_core` to `1.2.8` when using this flag. The core treats older descriptors
+  whose `size` does not include `flags` as `0`.
+
+Lay out controls using the supplied `area`; its origin is in device pixels and its
+dimensions can vary. `on_enter` runs when the editor opens, not when its mod is merely
+highlighted in Installed. The core retains the list selection and scroll on return.
 
 Events (`az_event`):
 
@@ -1119,3 +1137,58 @@ There is no command-status polling fallback or release retry. Check each member 
 
 Background analysis workers use the optional [track analysis service](18-track-analysis.md)
 to obtain read-only source locators and publish missing USB beat/phrase data.
+
+## Beatport login service
+
+Core 1.2.8 adds `beatport_login_service(AZ_BEATPORT_LOGIN_ABI)`. Check the getter with
+`AZ_HAS`, then each entry with `AZ_BEATPORT_LOGIN_HAS`. An unsupported ABI or firmware
+returns `NULL`; the initial firmware implementation supports EP147 2.00
+(`ep147-9e9454e357389ece`). Mods use `"hooks": false` and can declare `"firmware": ["any"]`
+while refusing initialization when this optional service is unavailable.
+
+The service owns the native login screen interaction and credential storage. It captures
+the fields on a manual **LOG IN** press in the login state, fills an empty login screen
+from saved credentials, and submits only while the fields still match and the button
+still offers **LOG IN**. The core performs native UI calls on EP147's message thread and
+file operations on a worker. A mod receives no native pointers or password.
+
+All entries are for initialization or core UI callbacks and return `0` on success or `-1`
+when unavailable, invalid or refused. Pass your own mod ID. The first successful
+`configure` must run from `init` and claims the service for that mod until restart.
+
+```c
+if (!AZ_HAS(core, beatport_login_service)) return 1;
+const az_beatport_login_v1 *login = core->beatport_login_service(AZ_BEATPORT_LOGIN_ABI);
+if (!AZ_BEATPORT_LOGIN_HAS(login, configure) ||
+    !AZ_BEATPORT_LOGIN_HAS(login, status) ||
+    !AZ_BEATPORT_LOGIN_HAS(login, forget)) return 1;
+az_beatport_login_options options = {
+    .size = sizeof options, .auto_login = 1, .remember = 1,
+    .delay_sec = 45, .max_attempts = 1,
+};
+return login->configure(MOD_ID, &options);
+```
+
+`configure` copies `az_beatport_login_options`. `auto_login` and `remember` are `0` or `1`,
+`delay_sec` is `0..600`, and `max_attempts` is `1..4`. Invalid values are rejected without
+changing the active options. Later UI calls update preferences. Store these preferences
+with `cfg_set` if they should survive restart; the service does not save mod settings.
+
+`status(id, out)` copies `az_beatport_login_status`; set `out->size = sizeof *out` first.
+`have_credentials` and `username` describe the committed login, not an unfinished write.
+`save_pending` covers the initial load, saving a captured login and deletion.
+`storage_error` is zero or the latest storage operation's `errno` value. A UI must show
+pending and failure states instead of reporting successful persistence prematurely.
+
+`forget(id)` queues deletion and cancels pending autofill and automatic submission. Its
+successful return means the request was accepted. Continue checking `status` for
+completion and any storage error; deletion failure must remain visible to the user.
+
+The worker keeps compatibility with the existing
+`/home/root/settings/azmod-community/beatport-remember.dat` hex-encoded file. Credentials
+stay on the deck with owner-only file permissions. This is a convenience store, not
+encrypted storage: root on the deck can read it. No password is exposed through this API.
+
+The host harness supplies synthetic status and options for UI tests. It does not emulate
+the firmware editors, disk persistence or Beatport authentication; test those in the core
+and on the deck.

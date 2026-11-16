@@ -42,6 +42,11 @@ the audio.
 | audio tap callbacks | the core's tap thread |
 | hooks | whichever EP147 thread calls the function |
 
+The core's UI thread is its overlay thread, separate from EP147's JUCE message thread.
+`post_ui` also runs on the overlay thread. Native UI work must go through an SDK service
+that owns its threading and object lifetime; a tick or `post_ui` callback cannot safely
+manipulate firmware widgets directly.
+
 A busy-path callback reads a few values, updates state and returns. It does not block or
 sleep, access files or the network, start processes or make large allocations, and it logs
 only when something changes.

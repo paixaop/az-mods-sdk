@@ -374,10 +374,23 @@ static int s_register_screen(const char *id, const az_screen_v1 *scr)
 {
     check_id(id, "register_screen");
     if (ctx != CTX_INIT) fail(K_API, "register_screen from %s", CTXNAME[ctx]);
-    if (!scr || scr->size < (int)sizeof(az_screen_v1) || !scr->on_draw) return 1;
+    if (!scr || scr->size < (int)(offsetof(az_screen_v1, user) + sizeof scr->user) || !scr->on_draw) return 1;
+    if (screen == scr) return 0; /* the same page may also have a Mod Menu shortcut */
     screen = scr;
     screens_registered++;
     return 0;
+}
+
+/* A screen row supplies the same page that register_screen exposes. Other row
+ * kinds need their own harness interaction model and remain unsupported here. */
+static int s_register_row(const char *id, const az_row_v1 *row)
+{
+    check_id(id, "register_row");
+    if (ctx != CTX_INIT || !row || row->size < (int)sizeof *row ||
+        !row->key || !key_ok(row->key) || strlen(row->key) > 24 ||
+        !row->label || row->kind != AZ_ROW_SCREEN || !row->screen)
+        return -1;
+    return s_register_screen(id, row->screen) == 0 ? screens_registered - 1 : -1;
 }
 
 static int in_draw(const az_draw *d, const char *what)
@@ -986,6 +999,7 @@ static void end_lifetime(void)
 #include "track-data.h"
 #include "track-timing.h"
 #include "deck-status.h"
+#include "beatport-login.h"
 
 /* The host has no native player store. Keep the public service callable so a
  * mod can load its settings and gate native writes on command capabilities. */
@@ -1041,6 +1055,7 @@ static const az_core_v1 CORE = {
     .log = s_log,
     .fw_tag = s_fw_tag,
     .register_screen = s_register_screen,
+    .register_row = s_register_row,
     .draw_header = s_draw_header,
     .draw_text = s_draw_text,
     .fill_rect = s_fill_rect,
@@ -1088,6 +1103,7 @@ static const az_core_v1 CORE = {
     .command_submit = ht_command,
     .waveform_request = ht_wave_request,
     .library_service = ht_library_service,
+    .beatport_login_service = hb_service,
     .waveform_acquire = ht_wave_acquire,
     .time_to_beat = ht_time_to_beat,
     .beat_to_time = ht_beat_to_time,
@@ -1103,6 +1119,7 @@ static const az_mod_v1 *mod;
 static int load_mod(void)
 {
     hs_reset();
+    hb_configured = 0;
     if (handle && !keep_loaded) dlclose(handle);   /* the core never unloads a mod with a thread or tap */
     if (nthreads) end_lifetime();
     pthread_mutex_lock(&ht_mu);
@@ -1159,6 +1176,7 @@ static int load_mod(void)
 
 static void call_tick(void)
 {
+    hb_advance();
     drain_post();                       /* post_ui callbacks run on the UI thread, before tick */
     ht_callbacks();
     hs_drain();

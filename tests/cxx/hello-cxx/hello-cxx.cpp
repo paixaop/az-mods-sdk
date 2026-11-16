@@ -117,7 +117,7 @@ int on_input(const az_event *ev, void *)
     return ev->kind == AZ_EV_KNOB || ev->kind == AZ_EV_CLICK;   // BACK and taps: the core
 }
 
-const az_screen_v1 SCREEN = { sizeof(az_screen_v1), on_draw, on_input, nullptr, nullptr };
+const az_screen_v1 SCREEN = { sizeof(az_screen_v1), on_draw, on_input, nullptr, nullptr, 0 };
 
 // Periodic at a varying rate: repaints are paced by the monotonic clock, not by ticks.
 void tick()

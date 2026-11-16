@@ -23,7 +23,7 @@ permissions:
 env:
   MOD_DIR: "."             # where azmod.json and the Makefile are, relative to the repo root
   SDK_REPO: "Kyle-Hosman/az-mods-sdk"
-  SDK_REF: "v1.2.3"        # the SDK version you built and tested with (`azmod-pack --version`)
+  SDK_REF: "v1.2.8"        # the SDK version you built and tested with (`azmod-pack --version`)
   UPDATE_INDEX: "true"     # commit the new entry into ./azmods-repo.json if it exists
 
 jobs:

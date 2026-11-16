@@ -34,7 +34,7 @@ import urllib.request
 import zipfile
 import zlib
 
-SDK_VERSION = "1.2.3"   # = the AZ-MODS release whose core it matches; the template pins v<this>
+SDK_VERSION = "1.2.8"   # = the AZ-MODS release whose core it matches; the template pins v<this>
 ABI = 1
 
 # The package container format. One place to change it.
