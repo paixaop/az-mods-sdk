@@ -8,7 +8,104 @@ frame and audio contexts. They are independent of the legacy track-data developm
 flag. Mods use only this public API; the core owns native source qualification,
 firmware integration and publication.
 
-## Analyze the current load
+## Phrase and vocal completion (v2)
+
+New analyzers should use `analysis_open_v2` or `analysis_open_loaded_v2`, plus the
+existing `analysis_commit`/`analysis_close`. Check each member with `AZ_LIB_HAS`.
+The original open calls remain phrase-only and keep their TA01 contract below.
+The v2 calls request each missing component independently:
+
+| Saved/current analysis | `needed` work |
+| --- | --- |
+| Phrases and populated PVDI | None; `AZ_NOT_FOUND`, `job=0` |
+| Phrases only | `AZ_ANALYSIS_VOCALS` |
+| PVDI only | `AZ_DATA_PHRASES` (plus grid for file-only jobs if missing) |
+| Neither | `AZ_DATA_PHRASES` and `AZ_ANALYSIS_VOCALS` (plus missing file-only grid) |
+
+A valid populated PVDI with no positive detections is complete. An absent tag or a
+zero-entry placeholder needs analysis. Unknown versions, malformed tags and duplicate
+maps are refused, never overwritten. Loaded phrase work still requires a ready native
+grid. A vocal-only loaded job may have an empty `analysis_path`; no grid is needed for
+that work. Cached phrases are refreshed into the native holder before retaining a
+vocal-only job, and its native map edition is recaptured after refresh.
+
+A v2 job commits `TA02`, with big-endian fields:
+
+| Offset | Value |
+| --- | --- |
+| 0 | `TA02` |
+| 4 | PQTZ byte length (zero for loaded jobs) |
+| 8 | PSSI byte length, or zero when phrases were already present |
+| 12 | PVDI byte length, or zero when vocals were already present |
+| 16 | Actual decoded PCM sample rate (44100 or 48000) |
+| 20 | Actual decoded source frame count (at most twenty minutes) |
+| 24 | PQTZ, PSSI, PVDI tags in that order; omitted components consume no bytes |
+
+The supplied components must match `job.needed`. PVDI has header length 24, then
+hop samples at offset 12 (u32), analysis sample rate at 16 (u16), version 1 at 18
+(u16), frame count at 20 (u32), and one 0..4 confidence byte per frame. At most
+262144 frames are accepted. The count must cover the decoded duration rounded up
+to one analysis hop. Do not confuse this analysis rate with the audio's PCM rate.
+The Track Analysis fallback writes hop=1024, rate=22050 and binary 0/4 estimates.
+
+The core saves PVDI to `.2EX` and adds an `AZVD` provenance tag: header/total length
+32, u32 schema=1 at 12, method=`AZ_VOCAL_SPECTRAL` at 16, FNV-1a-32 of the complete
+PVDI tag at 20, decoded source frame count at 24 and source PCM rate at 28. A marker
+only applies to its matching PVDI bytes. Unknown tags and unrelated bytes survive.
+DAT, EXT and 2EX are published independently with synced renames; partial failure
+can leave valid reusable components. A later lease requests only missing work.
+
+## Reading vocal intervals
+
+`vocal_intervals(id, &track, &out, intervals, capacity)` reads a USB OneLibrary track.
+`vocal_intervals_loaded(id, deck, load_epoch, &out, intervals, capacity)` reads the
+accepted current USB or completed Beatport load. Both are copied, worker-only calls
+on the shared library service, independent of the legacy ticket development flag.
+They perform I/O; never call them from UI, frame or audio callbacks. Initialize
+`out.size = sizeof out`. They do not create a job, ticket, cache or ANLZ file.
+
+`az_vocal_interval` contains only `start_s` and `stop_s`, defining half-open original-
+track seconds. PVDI values >=3 form contiguous intervals. No smoothing, minimum
+length or beat snapping is imposed. Convert playback clocks explicitly if needed.
+`az_vocal_snapshot_v1` reports count, analysis clock, covered duration, component
+revision and observation time. `method` is `AZ_VOCAL_PVDI` for existing data or
+`AZ_VOCAL_SPECTRAL` for a matching generated marker; the former does not authenticate
+which application created the file. The last generated interval is clipped to the
+exact decoded duration. File-only PVDI without a marker covers whole analysis hops.
+
+| Result | Meaning |
+| --- | --- |
+| `AZ_OK` | Complete copy; zero intervals is valid completed instrumental analysis |
+| `AZ_LIMIT` | `out.interval_count` gives required capacity; no intervals copied |
+| `AZ_NOT_FOUND` | No populated PVDI; this does not mean there are no vocals |
+| `AZ_UNSUPPORTED` | Unsupported source or PVDI version |
+| `AZ_FAILED` | Malformed/ambiguous analysis or I/O failure |
+| `AZ_STALE` | Load/source/files changed while reading |
+
+Pass NULL/0 for a sizing read, allocate the reported count, then read again. Handle
+`AZ_LIMIT` again if analysis changed, and use the final revision. Output stays unchanged
+on errors other than `AZ_LIMIT`. Caller-owned intervals need no release. The SDK derives
+intervals directly from stored PVDI, so there is no separate interval file to go stale.
+
+```c
+az_vocal_interval spans[1024];
+az_vocal_snapshot_v1 vocals = {.size = sizeof vocals};
+if (AZ_LIB_HAS(lib, vocal_intervals_loaded)) {
+    int rc = lib->vocal_intervals_loaded(MOD_ID, deck, load_epoch,
+                                        &vocals, spans, 1024);
+    if (rc == AZ_OK) {
+        /* Copy/send spans[0..vocals.interval_count) to the UI on its own thread. */
+    }
+    /* Handle AZ_LIMIT with a larger buffer, and absence/staleness independently. */
+}
+```
+
+PVDI structure is corroborated by [pyrekordbox's parser](https://github.com/dylanljones/pyrekordbox/pull/208/files)
+and [dj-setbox's timing observations](https://github.com/tgf-between-your-legs/dj-setbox).
+Our local reference exports have no PVDI; generated-data and format tests establish
+SDK behavior, not detection accuracy or native firmware display of this tag.
+
+## Analyze the current load (legacy phrase-only calls)
 
 `analysis_open_loaded(id, deck, load_epoch, &job)` accepts deck 0..3 and the
 `load_epoch` from an accepted native LOAD status event. Initialize `job.size`.

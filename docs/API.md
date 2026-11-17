@@ -1168,8 +1168,10 @@ There is no command-status polling fallback or release retry. Check each member 
 [asynchronous command ownership](13-track-data.md#asynchronous-command-ownership).
 
 Background analysis workers use the optional [track analysis service](18-track-analysis.md)
-to obtain read-only source locators and publish missing phrases for qualified USB
-and completed Beatport loads. The core refreshes the native phrase map immediately.
+to obtain read-only source locators and publish missing grid/phrase/vocal data.
+The v2 opens independently request phrases and PVDI; existing analysis is preserved.
+`vocal_intervals` and `vocal_intervals_loaded` return copied `[start_s, stop_s)` vocal
+segments on a worker, for qualified USB and completed Beatport tracks.
 
 ## Beatport login service
 
