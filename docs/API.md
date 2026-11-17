@@ -1,6 +1,8 @@
 # API reference (ABI version 1)
 
 For filtered live deck callbacks and optional event readers, see [Listening to a loaded deck](17-deck-status.md).
+For loaded USB/Beatport analysis leases and native phrase publication, see
+[Background track analysis](18-track-analysis.md).
 
 Everything a mod can use is declared in [`include/azmod-mod.h`](https://github.com/Kyle-Hosman/az-mods-sdk/blob/main/include/azmod-mod.h),
 along with what each piece does, where it may be called from and how fast it must return.
@@ -530,6 +532,34 @@ static int add_filter(void)
 `on_frame` (below) still works but sees only `AZ_BUS_ERP_LED`; new mods should use
 `frame_filter`.
 
+#### Panel button commands
+
+`button_press(id, button, hold_ms, &token)` queues a physical panel button through
+the core. `button_poll(id, token)` reports delivery. Check `AZ_HAS` for both entries.
+The initial supported firmware profile is EP147 2.00 (`ep147-9e9454e357389ece`).
+
+Unlike a frame filter, a command works while the hardware is idle. The core
+preserves real control values, supplies the press and its release to the native
+input reader, and maintains the frame checksum. `AZ_OK` from `button_press` means
+queued; `AZ_OK` from `button_poll` means the release frame was delivered. Verify
+the resulting screen or deck status separately: delivery does not establish that
+the native UI accepted the action.
+
+- Buttons: `AZ_PANEL_SOURCE`, `BROWSE`, `BACK`, `MENU`, `SEARCH`, `SELECT`,
+  `LOAD_1` through `LOAD_4`, `DECK_1` through `DECK_4`, `PLAY_LEFT`, `PLAY_RIGHT`,
+  `CUE_LEFT`, and `CUE_RIGHT` (each uses the `AZ_PANEL_` prefix).
+- LEFT/RIGHT act on the currently selected logical deck on that physical side.
+  Send the corresponding `DECK_n` command first when that selection matters.
+- Hold time is 40–3000 milliseconds. The core releases automatically, even when
+  the calling mod stops polling. Only one request can be active globally.
+- Call from a UI callback or a worker, never an audio or frame callback.
+- `AZ_BUSY` means contention, an active command, a physically held target button,
+  or a native input baseline that is not ready. `AZ_PENDING` means delivery is in
+  progress. `AZ_FAILED` means the queued press timed out. `AZ_STALE` means a
+  foreign/replaced token or a replaced input descriptor. An unsupported firmware
+  profile returns `AZ_UNSUPPORTED`. The most recent result remains available until
+  another command is accepted; tokens belong to the requesting mod and session.
+
 #### Touch and pointer
 
 **`int touch_filter(const char *id, az_touch_fn fn, void *user)`**
@@ -567,6 +597,8 @@ Sends real pointer input to the X server, for another program's window you show 
 - `button`: `0` move only, `1` left, `2` middle, `3` right.
 - `down`: `1` press, `0` release.
 - Returns `0` when queued, `-1` when refused (no X test extension, or the queue is full).
+- The core bundles the XTEST client library; stock decks do not need a separately
+  installed `libXtst.so`. The X server must provide the XTEST extension.
 
 **`void pointer_cursor(int visible)`**
 
@@ -1136,7 +1168,8 @@ There is no command-status polling fallback or release retry. Check each member 
 [asynchronous command ownership](13-track-data.md#asynchronous-command-ownership).
 
 Background analysis workers use the optional [track analysis service](18-track-analysis.md)
-to obtain read-only source locators and publish missing USB beat/phrase data.
+to obtain read-only source locators and publish missing phrases for qualified USB
+and completed Beatport loads. The core refreshes the native phrase map immediately.
 
 ## Beatport login service
 

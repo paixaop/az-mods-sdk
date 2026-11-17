@@ -94,7 +94,7 @@ class TrackDataHarnessTests(unittest.TestCase):
             root = pathlib.Path(directory)
             harness = root / "tools/harness"
             harness.mkdir(parents=True)
-            for filename in ("harness.c", "track-timing.h", "deck-status.h"):
+            for filename in ("harness.c", "track-timing.h", "deck-status.h", "beatport-login.h"):
                 shutil.copyfile(self.root / "tools/harness" / filename, harness / filename)
             fixture = root / "tests/fixtures/harness-track-data.c"
             fixture.parent.mkdir(parents=True)
