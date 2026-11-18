@@ -12,16 +12,14 @@
 #     sanitize.sh [options] [MOD ...]
 #
 #   MOD                 ID:RATE:SOURCE[,SOURCE...]  the mod's id (MOD_ID), the most repaints
-#                       a second it may request from tick, and its sources (.c, and .cpp or
-#                       .cc for C++)
+#                       a second it may request from tick, and its C sources (.c)
 #   -p, --passes LIST   which passes, e.g. "asan" or "plain,tsan" (default: all three)
 #   -s, --scenarios F   a C file of functional scenarios, compiled into the harness (see
 #                       harness_scenarios in harness.c); the mods then also run them
 #   -c, --controls      also run the planted controls (planted.c)
 #   -I DIR              an extra include directory for the mod sources
 #
-# Needs a C compiler with the sanitizers: clang on Linux or macOS (CC overrides it), and
-# for C++ sources clang++ (CXX overrides it). No Docker and no deck. Every pass must be able to fail, so:
+# Needs a C compiler with the sanitizers: clang on Linux or macOS (CC overrides it). No Docker and no deck. Every pass must be able to fail, so:
 #   - every binary must carry its pass's instrumentation (a build that silently dropped the
 #     flags would pass everything);
 #   - with --controls, planted.c with no fault must pass every check, and each planted
@@ -35,7 +33,6 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 INC=$(cd "$HERE/../.." && pwd)/include
 [ -f "$INC/azmod-mod.h" ] || { echo "azmod-mod.h not found in $INC" >&2; exit 2; }
 CC=${CC:-clang}
-CXX=${CXX:-clang++}
 PASSES="plain asan tsan"
 SCEN=""
 CONTROLS=0
@@ -58,21 +55,6 @@ for m in "$@"; do
     case $m in *:*:*) ;; *) echo "bad MOD (want ID:RATE:SOURCE[,SOURCE...]): $m" >&2; exit 2 ;; esac
 done
 [ -z "$SCEN" ] || [ -f "$SCEN" ] || { echo "no such scenarios file: $SCEN" >&2; exit 2; }
-
-# is_cxx SOURCES...: any C++ source among them
-is_cxx() {
-    for s in "$@"; do case $s in *.cpp|*.cc) return 0 ;; esac; done
-    return 1
-}
-# A C++ mod is linked with $CXX, and so is the harness when any mod is C++: the sanitizers'
-# C++ runtime parts (operator new and delete, UBSan's type checks) come with the program that
-# is linked by the C++ driver.
-ANY_CXX=0
-for m in "$@"; do
-    srcs=$(printf '%s' "${m#*:*:}" | tr ',' ' ')
-    # shellcheck disable=SC2086
-    if is_cxx $srcs; then ANY_CXX=1; fi
-done
 
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
@@ -141,16 +123,9 @@ for pass in $PASSES; do
     note "== $pass"
     D=$B/$pass
     mkdir -p "$D"
-    if [ "$ANY_CXX" = 0 ]; then
-        # shellcheck disable=SC2086
-        $CC $SAN $WARN -fno-omit-frame-pointer -I"$INC" $HFLAGS -rdynamic -o "$D/harness" \
-            "$HERE/harness.c" $LIBS
-    else
-        # shellcheck disable=SC2086
-        $CC $SAN $WARN -fno-omit-frame-pointer -I"$INC" $HFLAGS -c -o "$D/harness.o" "$HERE/harness.c"
-        # shellcheck disable=SC2086
-        $CXX $SAN -rdynamic -o "$D/harness" "$D/harness.o" $LIBS
-    fi
+    # shellcheck disable=SC2086
+    $CC $SAN $WARN -fno-omit-frame-pointer -I"$INC" $HFLAGS -rdynamic -o "$D/harness" \
+        "$HERE/harness.c" $LIBS
     [ -z "$SYM" ] || instrumented "$D/harness" "$SYM"
 
     # iocount.so counts file, process, network and heap calls from the mod's callbacks.
@@ -176,21 +151,8 @@ for pass in $PASSES; do
     for m in "$@"; do
         id=${m%%:*}; rest=${m#*:}; rate=${rest%%:*}; srcs=$(printf '%s' "${rest#*:}" | tr ',' ' ')
         # shellcheck disable=SC2086
-        if ! is_cxx $srcs; then
-            # shellcheck disable=SC2086
-            $CC $SAN $WARN $MODFLAGS $SHARED -o "$D/$id.so" $srcs $LIBS
-        else
-            objs="" n=0
-            for s in $srcs; do
-                n=$((n + 1))
-                case $s in *.cpp|*.cc) cc=$CXX ;; *) cc=$CC ;; esac
-                # shellcheck disable=SC2086
-                $cc $SAN $WARN $MODFLAGS -fexceptions -c -o "$D/$id.$n.o" "$s"
-                objs="$objs $D/$id.$n.o"
-            done
-            # shellcheck disable=SC2086
-            $CXX $SAN $MODFLAGS $SHARED -o "$D/$id.so" $objs $LIBS
-        fi
+        # shellcheck disable=SC2086
+        $CC $SAN $WARN $MODFLAGS $SHARED -o "$D/$id.so" $srcs $LIBS
         [ -z "$SYM" ] || instrumented "$D/$id.so" "$SYM"
         run "$id" "$D/$id.so" "$rate" "$D/$id.out" $FUNC
         expect_pass "$id ($pass)" "$D/$id.out"

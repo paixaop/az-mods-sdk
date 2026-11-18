@@ -142,11 +142,6 @@ int main(void)
     int first = 0, second = 0, units = 1, rate = 1, window = 1;
     assert(compare_timestamps(first++, second++, units++, rate++, window++) == AZ_TIME_EQUAL);
     assert(first == 1 && second == 1 && units == 2 && rate == 2 && window == 2);
-#ifdef __cplusplus
-    __uint128_t wide = __uint128_t(UINT64_MAX) + 1;
-    assert(compare_timestamps(wide, wide, 1, 1, 1) == AZ_TIME_EQUAL);
-    assert(compare_timestamps(wide, __uint128_t(0), 1, UINT64_MAX, 1) == AZ_TIME_AFTER);
-#endif
     az_command_completion completion;
     memset(&completion, 0, sizeof completion);
     completion.kind = AZ_COMMAND_COMPLETION_TERMINAL;

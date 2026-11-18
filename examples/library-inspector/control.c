@@ -107,7 +107,7 @@ static int input(const az_event *event, void *user)
     const int seconds = compare_timestamps(now.tv_sec, 0, 1, 1000000000, 1);
     const int nanos = compare_timestamps(now.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
     const int range = compare_timestamps(now.tv_sec,
-        (UINT64_MAX - (uint64_t)now.tv_nsec - UINT64_C(5000000000)) / UINT64_C(1000000000), 1, 1000000000, 1);
+                                         (UINT64_MAX - (uint64_t)now.tv_nsec - UINT64_C(5000000000)) / UINT64_C(1000000000), 1, 1000000000, 1);
     if (seconds == AZ_TIME_INVALID || seconds == AZ_TIME_BEFORE || nanos == AZ_TIME_INVALID || nanos != AZ_TIME_BEFORE ||
         range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) {
         status = AZ_FAILED;

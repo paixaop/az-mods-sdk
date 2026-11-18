@@ -7,7 +7,7 @@
 | Container engine | Docker Desktop | Docker Desktop with the WSL 2 engine | Docker Engine |
 | arm64 containers | native on Apple Silicon; emulated on Intel | emulated | native on arm64; on x86_64, install the arm64 emulator (below) |
 | Python 3.8+ | Command Line Tools (`python3`) | [python.org](https://www.python.org/downloads/windows/) | the distribution's package |
-| clang, for `make test` | Command Line Tools | a Linux container ([Testing](04-testing.md#running-it)) | the distribution's `clang` (and `clang++` for C++) |
+| clang, for `make test` | Command Line Tools | a Linux container ([Testing](04-testing.md#running-it)) | the distribution's `clang` |
 | git | Command Line Tools | [Git for Windows](https://git-scm.com/download/win) | the distribution's package |
 | `azmod-pack` | `tools/azmod-pack` | `tools\azmod-pack.cmd` (PowerShell or Command Prompt) | `tools/azmod-pack` |
 
@@ -16,7 +16,7 @@ Building these docs as a website requires Python 3.11 or newer ([CONTRIBUTING](h
 
 Emulated arm64 is slower but produces the same bytes.
 
-The first build creates the `az-mods-sdk:1` image (Ubuntu 18.04 arm64, GCC 7.5 for C and C++,
+The first build creates the `az-mods-sdk:1` image (Ubuntu 18.04 arm64, GCC 7.5 for C,
 glibc 2.27). Later builds reuse it.
 
 ## Install and build the template

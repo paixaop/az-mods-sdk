@@ -1,4 +1,4 @@
-# The SDK's own checks: unit tests; the template mod and the C++ test mod under the host
+# The SDK's own checks: unit tests; the template mod and the C deck-status test mod under the host
 # test harness (plain, AddressSanitizer + UBSan, ThreadSanitizer) with the harness's planted
 # controls; then build and validate both in the SDK container, and package the template.
 name: ci
@@ -18,7 +18,7 @@ jobs:
       - name: clang-format, the version .clang-format names
         run: |
           pip install clang-format==21.1.8
-          git ls-files '*.c' '*.cpp' ':!include/azmod-mod.h' | xargs clang-format --dry-run --Werror
+          git ls-files '*.c' ':!include/azmod-mod.h' | xargs clang-format --dry-run --Werror
 
   test:
     runs-on: ubuntu-latest
@@ -45,8 +45,8 @@ jobs:
           clang --version
           make -C template test SAN=${{ matrix.pass }} AZ_SDK="$PWD" TEST_CC=clang
 
-      - name: C++ test mod, ${{ matrix.pass }}
-        run: make -C tests/cxx/hello-cxx test SAN=${{ matrix.pass }} AZ_SDK="$PWD" TEST_CC=clang TEST_CXX=clang++
+      - name: C deck-status test mod, ${{ matrix.pass }}
+        run: make -C tests/c/hello-decks test SAN=${{ matrix.pass }} AZ_SDK="$PWD" TEST_CC=clang
 
       - name: Planted controls, ${{ matrix.pass }}
         # sanitize.sh exits non-zero when a control is not caught; the count also fails
@@ -85,9 +85,9 @@ jobs:
           tools/check-doc-snippets.py --control
       - name: Build and validate the template
         run: tools/azmod-pack build template
-      - name: Build and validate the C++ test mod
-        # g++ against the deck's libstdc++, exporting only az_mod_v1_entry
-        run: tools/azmod-pack build tests/cxx/hello-cxx
+      - name: Build and validate the C deck-status test mod
+        # C build exporting only az_mod_v1_entry
+        run: tools/azmod-pack build tests/c/hello-decks
       - name: Package the template
         run: tools/azmod-pack package template --out dist --github "$GITHUB_REPOSITORY"
       - name: Reproducible build

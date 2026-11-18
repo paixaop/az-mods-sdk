@@ -58,7 +58,9 @@ static void timestamp_boundaries(void)
     hs_deck_changed(0, AZ_DECK_LOADED);
     struct hs_listener *s = &hs_listeners[0];
     *s = (struct hs_listener){ .watch = { sizeof s->watch, AZ_DATA_VERSION, 1, 1, AZ_STATUS_TOPIC(AZ_STATUS_PHASE) },
-                               .fn = phase_changed, .initial = 1, .handle = ++hs_next_handle };
+                               .fn = phase_changed,
+                               .initial = 1,
+                               .handle = ++hs_next_handle };
     s->baseline[0] = hs_decks[0].current;
     s->after[0] = s->baseline[0].sequence;
     s->discrete[0] = hs_decks[0].discrete;

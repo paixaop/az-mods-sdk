@@ -1153,11 +1153,11 @@ def cmd_image(args):
     return rc
 
 
-def _has_cxx_sources(moddir):
-    """True when the mod has C++ sources (.cpp or .cc) outside out/ and dist/."""
+def _has_non_c_sources(moddir):
+    """True when source files require a language other than C."""
     for dp, dns, fns in os.walk(moddir):
         dns[:] = [d for d in dns if d not in ("out", "dist") and not d.startswith(".")]
-        if any(f.endswith((".cpp", ".cc")) for f in fns):
+        if any(f.endswith((".cpp", ".cc", ".cxx", ".C", ".hpp", ".hxx")) for f in fns):
             return True
     return False
 
@@ -1166,6 +1166,9 @@ def cmd_build(args):
     moddir = os.path.abspath(args.moddir)
     if not os.path.isfile(os.path.join(moddir, "Makefile")):
         print(f"{moddir} has no Makefile: point build at your mod's folder", file=sys.stderr)
+        return 1
+    if _has_non_c_sources(moddir):
+        print("The SDK builds C sources only; convert non-C sources before building", file=sys.stderr)
         return 1
     why = _docker_ok()
     if why:
@@ -1189,12 +1192,6 @@ def cmd_build(args):
               f"or the image was built by hand). Rebuild the SDK image:\n"
               f"    {' '.join(image_build_cmd(image))}\n"
               f"or: azmod-pack image", file=sys.stderr)
-        return 1
-    elif got != want and _has_cxx_sources(moddir) and subprocess.run(
-            ["docker", "run", "--rm", "--platform=linux/arm64", image, "sh", "-c",
-             "command -v g++ >/dev/null"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
-        print(f"{image} has no C++ compiler, and this mod has C++ sources", file=sys.stderr)
         return 1
     include = os.path.abspath(args.include or os.path.join(SDK_ROOT, "include"))
     # Docker Desktop only sees folders it shares (your home folder by default). An unshared

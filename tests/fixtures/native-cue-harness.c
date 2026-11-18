@@ -7,7 +7,7 @@ int main(void)
 {
     const az_library_v1 *library = ht_library_service(AZ_LIBRARY_ABI);
     assert(AZ_LIB_HAS(library, native_cues));
-    az_native_cue_snapshot out = {.size = sizeof out, .version = AZ_DATA_VERSION, .revision = 123};
+    az_native_cue_snapshot out = { .size = sizeof out, .version = AZ_DATA_VERSION, .revision = 123 };
     for (int deck = 0; deck < 4; ++deck) {
         assert(library->native_cues(deck, &out) == AZ_UNSUPPORTED);
         assert(out.size == sizeof out && out.revision == 123);

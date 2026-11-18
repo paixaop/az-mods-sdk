@@ -166,27 +166,27 @@ class ElfChecks(unittest.TestCase):
             self.assertEqual(len(e.exports()), nexp, name)
 
 
-class CxxSources(unittest.TestCase):
-    """build checks the image for g++ only when the mod has C++ sources."""
+class CSourceBoundary(unittest.TestCase):
+    """The C build rejects source files requiring another language."""
 
     def test_detects_cpp_and_cc(self):
         for name in ("mod.cpp", "src/part.cc"):
             with tempfile.TemporaryDirectory() as td:
                 os.makedirs(os.path.dirname(os.path.join(td, name)), exist_ok=True)
                 open(os.path.join(td, name), "w").close()
-                self.assertTrue(ap._has_cxx_sources(td), name)
+                self.assertTrue(ap._has_non_c_sources(td), name)
 
-    def test_c_only_and_build_output_are_not_cxx(self):
-        self.assertFalse(ap._has_cxx_sources(TEMPLATE))      # control: the C template
+    def test_c_only_and_build_output(self):
+        self.assertFalse(ap._has_non_c_sources(TEMPLATE))      # control: the C template
         with tempfile.TemporaryDirectory() as td:
             for d in ("out", "dist", ".git"):
                 os.makedirs(os.path.join(td, d))
                 open(os.path.join(td, d, "x.cpp"), "w").close()
             open(os.path.join(td, "mod.c"), "w").close()
-            self.assertFalse(ap._has_cxx_sources(td))
+            self.assertFalse(ap._has_non_c_sources(td))
 
-    def test_the_cxx_test_mod(self):
-        self.assertTrue(ap._has_cxx_sources(os.path.join(HERE, "cxx", "hello-cxx")))
+    def test_the_deck_test_mod(self):
+        self.assertFalse(ap._has_non_c_sources(os.path.join(HERE, "c", "hello-decks")))
 
 
 class ImageLabel(unittest.TestCase):

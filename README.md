@@ -24,12 +24,12 @@ The same guide is on the web at
 | Path | |
 |---|---|
 | `include/azmod-mod.h` | the one header a mod includes (ABI version 1) |
-| `docker/Dockerfile` | the build container: the C and C++ compilers and C library official AZ-MODS releases use |
+| `docker/Dockerfile` | the build container: the C compiler and C library official AZ-MODS releases use |
 | `template/` | `hello-az`, a complete mod: a settings page with a checkbox, and a live BPM and title readout for each deck |
 | `template/.github/workflows/release.yml` | push a tag, get a release with the `.azmod` attached |
 | `tools/azmod-pack` | `new`, `build`, `image`, `validate`, `package`, `repo add`, `repo check`, `list check` |
 | `tools/harness/` | the host test harness: plain, AddressSanitizer + UBSan, ThreadSanitizer |
-| `tests/cxx/hello-cxx/` | a C++ mod: proof that C++ builds, validates and passes the harness |
+| `tests/c/hello-decks/` | a C deck-status mod tested by the build, validator and harness |
 | `docs/` | the developer guide, the Guidelines and the API reference; also the source of the AZ-MODS Docs website (`mkdocs.yml`) |
 
 ## Requirements
@@ -39,7 +39,7 @@ The same guide is on the web at
 | Docker with `linux/arm64` | native on Mac (Apple Silicon) and arm64 Linux; emulated by Docker Desktop on Intel Macs and Windows; on x86_64 Linux, install the arm64 emulator once ([setup](docs/02-setup.md)) |
 | Python 3.8+ | `azmod-pack` and the SDK's tools, standard library only (3.11+ only to build the docs website) |
 | git | |
-| clang (clang++ for C++) | the test harness (`make test`); on Windows in a container ([Running it](docs/04-testing.md#running-it)) |
+| clang | the test harness (`make test`); on Windows in a container ([Running it](docs/04-testing.md#running-it)) |
 
 ## Quickstart
 

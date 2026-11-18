@@ -566,7 +566,9 @@ static int s_ui_theme(void) { return theme; }
 static const char *s_disk_dir(const char *id)
 {
     check_id(id, "data_dir/assets_dir");
-    if (ctx != CTX_INIT) fail(K_API, "data_dir/assets_dir from %s (they touch the disk)", CTXNAME[ctx]);
+    /* A storage worker can run while the UI draws. Its call has no UI context. */
+    if (!thread_lifetime && ctx != CTX_INIT)
+        fail(K_API, "data_dir/assets_dir from %s (they touch the disk)", CTXNAME[ctx]);
     return NULL;
 }
 

@@ -233,8 +233,9 @@ static int we_sleep(const struct timespec *t, struct timespec *remaining)
     const int positive = compare_timestamps(t->tv_nsec, 0, 1000000000, 1000000000, 1);
     const int bound = compare_timestamps(t->tv_nsec, 100000000L, 1000000000, 1000000000, 1);
     WE_CHECK(we_in_probe && seconds != AZ_TIME_INVALID && seconds == AZ_TIME_EQUAL &&
-             positive != AZ_TIME_INVALID && positive == AZ_TIME_AFTER &&
-             bound != AZ_TIME_INVALID && bound <= AZ_TIME_EQUAL, "bounded actual requested sleep");
+                 positive != AZ_TIME_INVALID && positive == AZ_TIME_AFTER &&
+                 bound != AZ_TIME_INVALID && bound <= AZ_TIME_EQUAL,
+             "bounded actual requested sleep");
     we_sleeps++;
     we_ns += (uint64_t)t->tv_nsec;
     if (!we_is("permanent") && (!we_is("delayed") || we_pending >= 27)) we_pump(&we_engine);
@@ -291,7 +292,8 @@ int main(int argc, char **argv)
     st_destroy(&we_engine);
     const int elapsed = compare_timestamps(we_ns, UINT64_C(31000000000), 1000000000, 1000000000, 1);
     WE_CHECK(!owned && we_accepted == we_released && we_logs && we_calls <= 257 && we_sleeps <= 256 &&
-             elapsed != AZ_TIME_INVALID && elapsed == AZ_TIME_BEFORE, "finite budgets and real accepted-ticket cleanup");
+                 elapsed != AZ_TIME_INVALID && elapsed == AZ_TIME_BEFORE,
+             "finite budgets and real accepted-ticket cleanup");
     const char *last = we_lines[we_logs - 1];
     if (we_is("immediate") || we_is("delayed")) {
         if (we_is("immediate") && !strstr(last, "status=PASS")) {

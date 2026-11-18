@@ -14,13 +14,13 @@ PROBE = ROOT / "examples/slip-callback-probe"
 
 class SlipCapture(unittest.TestCase):
     def run_fixture(self, modes, sanitizer=False, missing=False, actual_arm=False):
-        cc, cxx = shutil.which("clang"), shutil.which("clang++")
-        if not cc or not cxx:
-            self.skipTest("host Clang C/C++ unavailable")
+        cc = shutil.which(os.environ.get("CC", "clang"))
+        if not cc:
+            self.skipTest("host C compiler unavailable")
         with tempfile.TemporaryDirectory() as temporary:
             obj = pathlib.Path(temporary) / "capture.o"
             binary = pathlib.Path(temporary) / "fixture"
-            flags = ["-O1", "-g", "-Wall", "-Wextra", "-Werror", "-fexceptions", "-I" + str(PROBE), "-I" + str(ROOT / "include")]
+            flags = ["-O1", "-g", "-Wall", "-Wextra", "-Werror", "-fexceptions", "-fasynchronous-unwind-tables", "-I" + str(PROBE), "-I" + str(ROOT / "include")]
             if sanitizer:
                 flags += ["-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"]
             producer = PROBE / "capture.c"
@@ -36,7 +36,7 @@ class SlipCapture(unittest.TestCase):
                 asm = pathlib.Path(temporary) / "entry.o"
                 subprocess.run([cc, *flags, "-c", str(PROBE / "native/azmod/sdk_cache_entry.S"), "-o", str(asm)], check=True, capture_output=True, text=True)
                 objects.append(str(asm))
-            subprocess.run([cxx, "-std=c++11", *flags, *extra, "-pthread", str(ROOT / "tests/fixtures/slip-capture-test.cpp"), *objects, "-o", str(binary)], check=True, capture_output=True, text=True)
+            subprocess.run([cc, "-std=gnu11", *flags, *extra, "-pthread", str(ROOT / "tests/fixtures/slip-capture-test.c"), *objects, str(ROOT / "tests/fixtures/native-unwind.S"), "-lc++" if platform.system() == "Darwin" else "-lstdc++", "-o", str(binary)], check=True, capture_output=True, text=True)
             for mode in modes:
                 result = subprocess.run([str(binary), mode], capture_output=True, text=True, timeout=10)
                 self.assertIn("SLIP_NATIVE_FORWARD_BASELINE_OK", result.stdout)

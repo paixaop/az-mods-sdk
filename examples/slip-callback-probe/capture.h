@@ -3,9 +3,6 @@
 #define SLIP_CAPTURE_H
 #include <stdint.h>
 #include "native/common/azcacheentry.h"
-#ifdef __cplusplus
-extern "C" {
-#endif
 struct slip_capture_record {
     uint64_t sequence, observed_ns;
     uintptr_t receiver, caller;
@@ -20,7 +17,4 @@ struct slip_capture_stats { uint64_t saved, dropped, rejected; };
 int slip_capture_arm(uintptr_t exact_caller_pc);
 int slip_capture_read(uint64_t sequence, struct slip_capture_record *);
 void slip_capture_get_stats(struct slip_capture_stats *);
-#ifdef __cplusplus
-}
-#endif
 #endif

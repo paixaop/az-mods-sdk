@@ -17,32 +17,14 @@ file system builds much faster than one under `/mnt/c`.
 
 ## Writing a mod
 
-### Can I use C++?
+### Which language does the SDK support?
 
-Yes. The build container has g++ 7.5, the same GCC as the C compiler. In the template's
-Makefile, list `.cpp` or `.cc` files in `SRCS` (C and C++ can be mixed); they compile with
-`g++` and the library links with it. [`tests/cxx/hello-cxx`](https://github.com/Kyle-Hosman/az-mods-sdk/tree/main/tests/cxx/hello-cxx/) is a
-complete C++ mod, built, validated and run under the harness by the SDK's CI.
-
-| How a C++ mod links | Why |
-|---|---|
-| against the deck's own `libstdc++.so.6` and `libgcc_s.so.1` | EP147 is C++ and already has them loaded: one C++ runtime and one unwinder in the process. The deck's is 6.0.25 (up to `GLIBCXX_3.4.25`); GCC 7 needs at most `GLIBCXX_3.4.24` |
-| not with `-static-libstdc++` | it puts a second copy of the runtime inside EP147 and exports its symbols from the mod |
-| with a version script exporting only `az_mod_v1_entry` | the standard headers give their templates default visibility, so `-fvisibility=hidden` alone exports instances such as `std::vector<int>::~vector`, and the deck refuses the library (`Exports _ZNSt...; a mod exports only az_mod_v1_entry`) |
-
-The Makefile does all three. In the source:
-
-- The descriptor is aggregate-initialized in field order (C++14 has no designated
-  initializers); `az_mod_v1_entry` is `extern "C"` through `azmod-mod.h`.
-- Avoid global objects whose constructors do work; do setup in `init()`
-  ([Guidelines](GUIDELINES.md#2-set-up-in-init-not-in-a-constructor)).
-- Keep exceptions inside the mod: every callback catches what it can throw
-  ([Guidelines](GUIDELINES.md#3-keep-the-busy-paths-fast)).
-- `make test` builds C++ sources with `clang++` (`TEST_CXX` overrides it).
-
-An `az-mods-sdk:1` image built before the SDK added g++ has no C++ compiler. `azmod-pack build`
-refuses any image that was not built from the SDK's current `docker/`, and prints the command
-that rebuilds it ([The SDK image](02-setup.md#the-sdk-image)).
+Use C11. The build container supplies GCC 7.5, and the template compiles `.c` files
+with the C compiler. The headers, examples, tests and community mods use C.
+[`tests/c/hello-decks`](https://github.com/Kyle-Hosman/az-mods-sdk/tree/main/tests/c/hello-decks/)
+displays each deck's BPM and runs through the same build, validation and sanitizer checks
+as the template. Initialize resources in `init()`, return errors explicitly, and release
+owned resources on every failure path.
 
 ### Can I use another library?
 

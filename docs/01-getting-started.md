@@ -6,7 +6,7 @@ GitHub release. The package holds three files:
 
 | File | Contents |
 |---|---|
-| `<id>.so` | the mod, in C or C++ |
+| `<id>.so` | the mod, in C |
 | `azmod.json` | manifest: id, name, version, author, source URL, firmware tags |
 | `icon.png` | 256x256, shown in the Mod Menu |
 

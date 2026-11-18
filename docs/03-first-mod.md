@@ -27,7 +27,7 @@ beat-counter/
     .github/workflows/release.yml   release on a pushed tag
 ```
 
-The mod's sources can be C, C++ or both; see [Can I use C++?](07-faq.md#can-i-use-c).
+Write the mod in C; the template, SDK headers and test harness use C11.
 
 The id is 3 to 32 characters drawn from `a-z`, `0-9` and `-`, and cannot be any of `enabled`,
 `azmod`, `azstem`, `az-mods` or `azmods`. It names the mod's folder on the USB, the prefix of

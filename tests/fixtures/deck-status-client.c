@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* The same dynamically loaded mod is compiled as C and C++, with or without
+/* The same dynamically loaded mod is compiled in C11 and GNU C modes, with or without
  * the optional readers. The host compares its public callback transcript. */
 #ifdef WITH_HELPERS
 #include "azmod-data-helpers.h"

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="1090" viewBox="0 0 960 1090" role="img" aria-labelledby="title desc">
   <title id="title">AZ-MODS SDK architecture</title>
-  <desc id="desc">A C or C++ mod builds through azmod-pack into an ARM64 shared library and an installable package. The same source can be rebuilt for a host test harness. On a deck or emulator the external AZ-MODS core loads the approved mod inside EP147, calls its entry point and init, and dispatches callbacks. The mod calls the core service table. Its optional library service exposes three distinct paths for stored USB data, live observations and asynchronous native commands.</desc>
+  <desc id="desc">A C mod builds through azmod-pack into an ARM64 shared library and an installable package. The same source can be rebuilt for a host test harness. On a deck or emulator the external AZ-MODS core loads the approved mod inside EP147, calls its entry point and init, and dispatches callbacks. The mod calls the core service table. Its optional library service exposes three distinct paths for stored USB data, live observations and asynchronous native commands.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M1 1 9 5 1 9Z" fill="#426061"/>
@@ -27,7 +27,7 @@
   <g aria-label="The mod build pipeline">
     <rect x="38" y="151" width="244" height="92" rx="8" class="node"/>
     <text x="56" y="182" class="name">Mod project</text>
-    <text x="56" y="208" class="body">C or C++ and azmod.json</text>
+    <text x="56" y="208" class="body">C and azmod.json</text>
     <text x="56" y="229" class="field">#include "azmod-mod.h"</text>
     <path d="M282 198H348" class="edge"/>
     <rect x="351" y="151" width="251" height="92" rx="8" class="node"/>

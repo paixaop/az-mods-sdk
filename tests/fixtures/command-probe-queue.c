@@ -32,8 +32,7 @@ static void *consume(void *unused)
 }
 int main(void)
 {
-    az_command_result first = { .request_id = 3, .outcome = AZ_COMMAND_APPLIED,
-                               .reason = AZ_OK, .revision = 7, .observed_ns = UINT64_MAX - 1 };
+    az_command_result first = { .request_id = 3, .outcome = AZ_COMMAND_APPLIED, .reason = AZ_OK, .revision = 7, .observed_ns = UINT64_MAX - 1 };
     az_command_result second = first;
     assert(probe_terminal_equal(&first, &second));
     ++second.observed_ns;

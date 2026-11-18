@@ -10,8 +10,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class DataRefactor(unittest.TestCase):
-    def run_fixture(self, source, cxx=False, sanitize=False, includes=(), failure=False, tsan=False):
-        compiler = shutil.which('clang++' if cxx else 'clang')
+    def run_fixture(self, source, standard="c11", sanitize=False, includes=(), failure=False, tsan=False):
+        compiler = shutil.which('clang')
         if not compiler:
             self.skipTest('Clang unavailable')
         with tempfile.TemporaryDirectory() as directory:
@@ -19,7 +19,7 @@ class DataRefactor(unittest.TestCase):
             flags = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all'] if sanitize else []
             if tsan:
                 flags = ['-fsanitize=thread', '-fno-omit-frame-pointer']
-            args = [compiler, '-x', 'c++' if cxx else 'c', '-std=c++14' if cxx else '-std=c11',
+            args = [compiler, '-x', 'c', '-std=' + standard,
                     '-Wall', '-Wextra', '-Werror', '-O1', '-g', *flags,
                     *['-I'+str(path) for path in includes],
                     '-I'+str(ROOT/'include'), '-I'+str(ROOT/'examples/library-inspector'), '-pthread']
@@ -35,15 +35,15 @@ class DataRefactor(unittest.TestCase):
     def test_readers_c11(self):
         self.run_fixture('data-helpers.c')
 
-    def test_readers_cpp14(self):
-        self.run_fixture('data-helpers.c', cxx=True)
+    def test_readers_gnu17(self):
+        self.run_fixture('data-helpers.c', standard="gnu17")
 
     def test_readers_asan_ubsan(self):
         self.run_fixture('data-helpers.c', sanitize=True)
 
     def test_deck_status_readers(self):
         self.run_fixture('deck-status-helpers.c')
-        self.run_fixture('deck-status-helpers.c', cxx=True)
+        self.run_fixture('deck-status-helpers.c', standard="gnu17")
         self.run_fixture('deck-status-helpers.c', sanitize=True)
 
     def test_authoritative_core_clock(self):

@@ -23,19 +23,19 @@ core first and are then copied here unchanged (`tools/check-header.py` compares 
 | `tools/azmod-pack build template` | the template builds and validates |
 | `cd template/out && sha256sum -c ../../tests/expected/hello-az.so.sha256` | the build is byte-identical to the recorded one |
 | `make -C template test SAN=plain` (`asan`, `tsan`) | the template under the test harness |
-| `tools/azmod-pack build tests/cxx/hello-cxx`, `make -C tests/cxx/hello-cxx test SAN=plain` (`asan`, `tsan`) | the C++ test mod builds, validates and passes the harness |
+| `tools/azmod-pack build tests/c/hello-decks`, `make -C tests/c/hello-decks test SAN=plain` (`asan`, `tsan`) | the C deck-status test mod builds, validates and passes the harness |
 | `sh tools/harness/sanitize.sh --controls --passes plain` (`asan`, `tsan`) | every planted bug is caught (9, 3 and 1 on Linux) |
 | `pip install -r docs/requirements.txt && mkdocs build --strict` | the website builds with no broken link or anchor |
 | `python3 tools/public-hygiene .` | the hygiene rules below |
-| `git ls-files '*.c' '*.cpp' ':!include/azmod-mod.h' \| xargs clang-format --dry-run --Werror` | the C and C++ sources are formatted (clang-format 21.1.8) |
+| `git ls-files '*.c' ':!include/azmod-mod.h' \| xargs clang-format --dry-run --Werror` | the C sources are formatted (clang-format 21.1.8) |
 
 CI runs all of them.
 
 ## Style
 
-- C: C11. C++ in `tests/cxx/`: C++14. Both formatted with clang-format 21.1.8 and the
+- C: C11, formatted with clang-format 21.1.8 and the
   repository's `.clang-format` (`pip install clang-format==21.1.8`, then
-  `git ls-files '*.c' '*.cpp' ':!include/azmod-mod.h' | xargs clang-format -i`); CI checks it.
+  `git ls-files '*.c' ':!include/azmod-mod.h' | xargs clang-format -i`); CI checks it.
   `include/azmod-mod.h` is the core's file, copied unchanged.
 - Comments explain why the code is written the way it is, not what each line does.
 - Python in `tools/`: standard library only, Python 3.8 or newer. The docs website needs

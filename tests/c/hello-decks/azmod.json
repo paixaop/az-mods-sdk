@@ -1,0 +1,17 @@
+{
+  "azmod": 1,
+  "id": "hello-decks",
+  "name": "Hello Decks",
+  "version": "1.0.0",
+  "author": "Kyle-Hosman",
+  "summary": "A C test mod displaying each deck's BPM.",
+  "description": "Built and validated by CI and exercised by the SDK test harness. Reads deck state through public core services.",
+  "license": "GPL-3.0-only",
+  "source": "https://github.com/Kyle-Hosman/az-mods-sdk",
+  "api": 1,
+  "firmware": [
+    "any"
+  ],
+  "hooks": false,
+  "min_core": "1.2.3"
+}

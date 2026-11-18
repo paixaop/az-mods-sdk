@@ -21,8 +21,11 @@ int main(void)
     assert(!AZ_BEATPORT_LOGIN_HAS(&old_service, forget));
 
     az_beatport_login_options options = {
-        .size = sizeof options, .auto_login = 1, .remember = 1,
-        .delay_sec = 45, .max_attempts = 1,
+        .size = sizeof options,
+        .auto_login = 1,
+        .remember = 1,
+        .delay_sec = 45,
+        .max_attempts = 1,
     };
     az_beatport_login_status state = { .size = sizeof state };
     ctx = CTX_TICK;

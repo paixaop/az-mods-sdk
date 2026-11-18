@@ -23,8 +23,7 @@ deck on stage.
 
 ### 2. Set up in `init()`, not in a constructor
 
-Do all setup in `init()`. Don't use `__attribute__((constructor))` or C++ globals whose
-constructors do real work.
+Do all setup in `init()`. Don't use `__attribute__((constructor))` to initialize the mod.
 
 *Why:* the core's services do not exist yet when a constructor runs, and a constructor cannot
 report a failure. When `init()` returns non-zero, the Mod Menu shows that as the reason, and
@@ -59,7 +58,7 @@ only when something changes.
 - Don't call `fork`, `system` or `popen`: they copy the whole EP147 process. Start other
   programs with `launch` or `handoff`. They run outside EP147, where a crash or a stall cannot
   reach the music.
-- Don't let a C++ exception leave the mod's code. Catch exceptions in every callback.
+- Report callback failures through the public C API return codes and release any acquired resources on failure.
 
 *Why:* a single file read per call on a render path has frozen the deck. Filters are timed,
 and one that takes over 200 µs on 8 calls is switched off for the session.
