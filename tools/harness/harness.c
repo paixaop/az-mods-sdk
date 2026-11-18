@@ -1142,7 +1142,7 @@ static int load_mod(void)
         return 0;
     }
     mod = entry();
-    if (!mod || mod->abi != AZ_MOD_ABI || mod->size < (int)sizeof(az_mod_v1) || !mod->init) {
+    if (!mod || mod->abi != AZ_MOD_ABI || mod->size < (int)(offsetof(az_mod_v1, on_frame) + sizeof mod->on_frame) || !mod->init) {
         fail(K_INIT, "bad descriptor");
         return 0;
     }

@@ -8,17 +8,20 @@ int main(void)
 {
     mod_id = "beatport-fixture";
     const az_beatport_login_v1 *service = CORE.beatport_login_service(AZ_BEATPORT_LOGIN_ABI);
-    assert(AZ_HAS(&CORE, beatport_login_service));
+    const az_core_v1 *core = &CORE;
+    assert(AZ_HAS(core, beatport_login_service));
     assert(!CORE.beatport_login_service(2));
     assert(AZ_BEATPORT_LOGIN_HAS(service, configure));
     assert(AZ_BEATPORT_LOGIN_HAS(service, status));
     assert(AZ_BEATPORT_LOGIN_HAS(service, forget));
     az_core_v1 old_core = CORE;
     old_core.size = offsetof(az_core_v1, beatport_login_service);
-    assert(!AZ_HAS(&old_core, beatport_login_service));
+    core = &old_core;
+    assert(!AZ_HAS(core, beatport_login_service));
     az_beatport_login_v1 old_service = *service;
     old_service.size = offsetof(az_beatport_login_v1, forget);
-    assert(!AZ_BEATPORT_LOGIN_HAS(&old_service, forget));
+    const az_beatport_login_v1 *old = &old_service;
+    assert(!AZ_BEATPORT_LOGIN_HAS(old, forget));
 
     az_beatport_login_options options = {
         .size = sizeof options,

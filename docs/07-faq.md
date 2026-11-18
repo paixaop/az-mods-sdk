@@ -95,6 +95,14 @@ key it cannot store. Values are kept as `<id>:<key>` lines in `MODS/azmods.cfg` 
 change is written there within about 250 ms after values stop changing, at most every 5 seconds while
 they keep changing, and at once when the user leaves the mod's page or reloads.
 
+### My log says a call was refused "from outside its code"
+
+The core only accepts a call made with your mod's id from your mod's own code, and it checks where
+the call came from. At `-O2`, a core call as the last statement of a function the core called
+(`stop`, a row callback, a thread's main function) becomes a tail call, which reads as coming from
+outside your mod. `C->log` is dropped the same way, with no message. The template builds with
+`-fno-optimize-sibling-calls` to prevent this: add that flag if you use your own Makefile.
+
 ### The deck restarted and now all mods are off
 
 This is the quarantine: see [Crashes, quarantine and recovery](04-testing.md#crashes-quarantine-and-recovery).
@@ -118,6 +126,20 @@ tracks.
 
 A release asset was replaced after it was published, so its `sha256` or `size` no longer
 matches the repository file. Release a new version instead of replacing a package.
+
+### Can I charge for my mod?
+
+The GPL-3.0 lets anyone charge for copies, installation or support, as long as every buyer
+gets the mod's full source under the GPL-3.0, including any code it downloads, and is free to
+share it. AZ-MODS itself does not support paid mods:
+
+- The Mod Index lists only mods that are free with every feature: no paid tiers,
+  subscriptions, license keys, paid accounts or paid content, in the mod or in a service it
+  depends on. A donation link is fine as long as nothing is locked behind it.
+- Paid mods, and mods that unlock features through a paid service, get no help in the
+  AZ-MODS Discord or issue trackers. Questions about them go to whoever sells them.
+- The AZ-MODS name and logo may not be used to sell or promote a paid mod, service or
+  installation.
 
 ### Do I have to be in the Mod Index?
 

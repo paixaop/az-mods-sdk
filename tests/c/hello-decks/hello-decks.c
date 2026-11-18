@@ -133,7 +133,7 @@ static int init(const az_core_v1 *core)
 
 static const char *const FW_TAGS[] = { "any", NULL };
 
-static const az_mod_v1 MOD = { AZ_MOD_ABI, sizeof(az_mod_v1), MOD_ID, FW_TAGS, init, tick, NULL };
+static const az_mod_v1 MOD = { .abi = AZ_MOD_ABI, .size = sizeof(az_mod_v1), .id = MOD_ID, .fw_tags = FW_TAGS, .init = init, .tick = tick, .on_frame = NULL };
 
 // The public C entry point.
 const az_mod_v1 *az_mod_v1_entry(void)
