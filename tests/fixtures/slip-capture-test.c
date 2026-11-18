@@ -36,7 +36,7 @@ static __attribute__((noreturn)) void native_unwind(void)
     (void)_Unwind_RaiseException(value);
     abort();
 }
-int az_native_try(void (*call)(void *), void *context);
+int fixture_native_try(void (*call)(void *), void *context);
 
 #ifdef SLIP_CAPTURE_FORWARD_ONLY
 void *azsdk_cache_entry_originals[AZCE_KIND_COUNT];
@@ -138,7 +138,7 @@ int main(int argc, char **argv)
     }
     ARM_CALL(throwing);
     throwing.throwing = true;
-    assert(!az_native_try(arm_guarded, &throwing));
+    assert(!fixture_native_try(arm_guarded, &throwing));
     assert(exception_deletions == 1 && throwing.calls == 1 && errno == ERANGE);
     slip_capture_record out = { 0 };
     assert(slip_capture_read(5, &out) && out.raw == 255 && out.caller == caller);
@@ -371,7 +371,7 @@ int main(int argc, char **argv)
         FRAME(frame, 255, 1);
         frame.throwing = true;
         errno = frame.entry_errno;
-        assert(!az_native_try(frame_guarded, &frame));
+        assert(!fixture_native_try(frame_guarded, &frame));
         assert(exception_deletions == 1);
         frame_results(&frame);
         assert(stats().saved == 1);
