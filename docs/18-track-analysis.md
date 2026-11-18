@@ -1,17 +1,59 @@
 # Background track analysis
 
-The append-only `az_library_v1` tail provides `analysis_open`, `analysis_open_loaded`,
-`analysis_commit` and `analysis_close`. Check each entry you use with `AZ_LIB_HAS`;
-a loaded-track analyzer needs `analysis_open_loaded`, `analysis_commit` and
-`analysis_close`. These calls belong on a mod worker, perform I/O, and refuse UI,
-frame and audio contexts. They are independent of the legacy track-data development
-flag. Mods use only this public API; the core owns native source qualification,
-firmware integration and publication.
+The append-only `az_library_v1` exposes analysis leases, typed grid snapshots,
+typed result publication and lease cleanup. Check every entry you use with
+`AZ_LIB_HAS`. Run these calls on an SDK-created mod thread: they perform I/O
+and refuse UI, frame and audio contexts. Mods use only this public API; the core
+owns source qualification, firmware integration and publication.
+
+## Typed analysis
+
+Use `analysis_open_loaded_v2`, `analysis_grid`, `analysis_commit_result` and
+`analysis_close` for an in-process analyzer. These calls do not require a helper
+executable or serialized result buffer. A loaded lease never requests a new grid.
+For vocal-only work, skip the grid read entirely.
+
+Initialize `az_analysis_grid_v1.size` and call `analysis_grid(id, job, &grid,
+NULL, 0)`. `AZ_LIMIT` reports the required `grid.beat_count`; allocate that many
+`az_beat` records and repeat the call with the capacity. The snapshot belongs to
+the lease. Insufficient capacity does not copy a partial grid. Other failures
+leave the descriptor and beat array untouched. Stale load, source or lease
+identity returns `AZ_STALE`. Beat times are seconds on the native source clock.
+
+Publish an `az_analysis_result_v1` with `size`, `version = AZ_DATA_VERSION`,
+actual decoded `source_rate` and `source_frames`. Populate only requested maps:
+
+- `phrases`: mood 1/2/3, terminal beat and an array of
+  `az_analysis_phrase_v1` records. Phrase starts, fill starts, structure beats and
+  the terminal use **one-based native beat ordinals**; zero marks absent optional
+  positions. Starts are strictly increasing and precede the terminal.
+- `vocals`: `sample_rate = 22050`, `hop_samples = 1024`, `method = AZ_VOCAL_LSTM`,
+  count and an array of `az_vocal_frame_v1` records with activity 0 through 4.
+- `beats`: supplied only for a file-only lease requesting a missing grid.
+  A loaded lease leaves both `beats` and `beat_count` zero.
+
+Zero-initialize reserved fields and absent maps, including their pointers. Arrays
+remain caller-owned and must stay valid and unchanged for the synchronous commit
+call. The core validates counts, dimensions and values before serializing native
+file formats internally, then applies the same freshness and publication checks
+as legacy commits. Invalid records return `AZ_INVALID`; allocation pressure can
+return `AZ_LIMIT`. Success consumes the lease. Retry `AZ_BUSY` while the job is
+current; close every lease that did not commit successfully.
+
+The typed vocal count is
+`ceil(floor(source_frames * 22050 / source_rate) / 1024)`, with at least nine
+frames. A source rate of 44100 or 48000 and at most twenty minutes are accepted.
+The grid and decoded PCM must refer to the same clock; compare timestamp values
+with `compare_timestamps()` using the actual decoded rate.
+
+The raw `analysis_commit` entry remains available for existing callers. Its
+TA01/TA02/TA03 compatibility layouts are documented below; new analyzers should
+use typed publication.
 
 ## Phrase and vocal completion (v2)
 
 New analyzers should use `analysis_open_v2` or `analysis_open_loaded_v2`, plus the
-existing `analysis_commit`/`analysis_close`. Check each member with `AZ_LIB_HAS`.
+typed `analysis_commit_result` and `analysis_close`. Check each member with `AZ_LIB_HAS`.
 The original open calls remain phrase-only and keep their TA01 contract below.
 The v2 calls request each missing component independently:
 
@@ -29,7 +71,7 @@ grid. A vocal-only loaded job may have an empty `analysis_path`; no grid is need
 that work. Cached phrases are refreshed into the native holder before retaining a
 vocal-only job, and its native map edition is recaptured after refresh.
 
-A v2 job commits `TA02`, with big-endian fields:
+Legacy v2 callers can commit `TA02`, with big-endian fields:
 
 | Offset | Value |
 | --- | --- |
@@ -41,15 +83,24 @@ A v2 job commits `TA02`, with big-endian fields:
 | 20 | Actual decoded source frame count (at most twenty minutes) |
 | 24 | PQTZ, PSSI, PVDI tags in that order; omitted components consume no bytes |
 
-The supplied components must match `job.needed`. PVDI has header length 24, then
-hop samples at offset 12 (u32), analysis sample rate at 16 (u16), version 1 at 18
-(u16), frame count at 20 (u32), and one 0..4 confidence byte per frame. At most
-262144 frames are accepted. The count must cover the decoded duration rounded up
-to one analysis hop. Do not confuse this analysis rate with the audio's PCM rate.
-The Track Analysis fallback writes hop=1024, rate=22050 and binary 0/4 estimates.
+Legacy LSTM callers first check `AZ_LIB_HAS(L, analysis_formats)` and the
+`AZ_ANALYSIS_FORMAT_TA03` bit. `TA03` retains the TA02 fields at offsets 4–20,
+adds a u32 method at 24, and starts tags at 28. Use `AZ_VOCAL_LSTM` (2) when
+supplying vocals, or zero for a phrase-only result. Existing TA01/TA02 clients
+remain supported. Older cores cannot accept TA03.
+
+The supplied components must match `job.needed`. PVDI has header length 24,
+version/flags at 12 (u16, zero for plain data), hop samples at 14 (u16), analysis
+sample rate at 16 (u16), entry size 1 at 18 (u16), frame count at 20 (u32), and
+one 0..4 confidence byte per frame. At most 262144 frames are accepted. Scrambled
+or unknown versions are refused. Do not confuse the analysis rate with the source
+PCM rate. TA02 retains its original duration-ceiling count rule and spectral method.
+TA03 LSTM output requires hop=1024, rate=22050, at least nine frames, and count
+`ceil(floor(source_frames * 22050 / source_rate) / 1024)`. The inner floor is
+required: 18433 frames at 44100 Hz produce nine analysis frames, not ten.
 
 The core saves PVDI to `.2EX` and adds an `AZVD` provenance tag: header/total length
-32, u32 schema=1 at 12, method=`AZ_VOCAL_SPECTRAL` at 16, FNV-1a-32 of the complete
+32, u32 schema=1 at 12, method=`AZ_VOCAL_SPECTRAL` (TA02) or `AZ_VOCAL_LSTM` (TA03) at 16, FNV-1a-32 of the complete
 PVDI tag at 20, decoded source frame count at 24 and source PCM rate at 28. A marker
 only applies to its matching PVDI bytes. Unknown tags and unrelated bytes survive.
 DAT, EXT and 2EX are published independently with synced renames; partial failure
@@ -69,7 +120,7 @@ track seconds. PVDI values >=3 form contiguous intervals. No smoothing, minimum
 length or beat snapping is imposed. Convert playback clocks explicitly if needed.
 `az_vocal_snapshot_v1` reports count, analysis clock, covered duration, component
 revision and observation time. `method` is `AZ_VOCAL_PVDI` for existing data or
-`AZ_VOCAL_SPECTRAL` for a matching generated marker; the former does not authenticate
+`AZ_VOCAL_SPECTRAL`/`AZ_VOCAL_LSTM` for a matching generated marker; the former does not authenticate
 which application created the file. The last generated interval is clipped to the
 exact decoded duration. File-only PVDI without a marker covers whole analysis hops.
 
@@ -88,21 +139,25 @@ on errors other than `AZ_LIMIT`. Caller-owned intervals need no release. The SDK
 intervals directly from stored PVDI, so there is no separate interval file to go stale.
 
 ```c
-az_vocal_interval spans[1024];
-az_vocal_snapshot_v1 vocals = {.size = sizeof vocals};
-if (AZ_LIB_HAS(lib, vocal_intervals_loaded)) {
-    int rc = lib->vocal_intervals_loaded(MOD_ID, deck, load_epoch,
-                                        &vocals, spans, 1024);
-    if (rc == AZ_OK) {
-        /* Copy/send spans[0..vocals.interval_count) to the UI on its own thread. */
+static void read_loaded_vocals(const az_library_v1 *lib, int deck,
+                               uint64_t load_epoch) {
+    az_vocal_interval spans[1024];
+    az_vocal_snapshot_v1 vocals = {.size = sizeof vocals};
+    if (AZ_LIB_HAS(lib, vocal_intervals_loaded)) {
+        int rc = lib->vocal_intervals_loaded(MOD_ID, deck, load_epoch,
+                                            &vocals, spans, 1024);
+        if (rc == AZ_OK) {
+            /* Copy/send spans[0..vocals.interval_count) to the UI on its own thread. */
+        }
+        /* Handle AZ_LIMIT with a larger buffer, and absence/staleness independently. */
     }
-    /* Handle AZ_LIMIT with a larger buffer, and absence/staleness independently. */
 }
 ```
 
 PVDI structure is corroborated by [pyrekordbox's parser](https://github.com/dylanljones/pyrekordbox/pull/208/files)
 and [dj-setbox's timing observations](https://github.com/tgf-between-your-legs/dj-setbox).
-Our local reference exports have no PVDI; generated-data and format tests establish
+Retained native-function and original-model fixtures validate the reconstructed
+LSTM pipeline; generated-data and format tests establish
 SDK behavior, not detection accuracy or native firmware display of this tag.
 
 ## Analyze the current load (legacy phrase-only calls)
@@ -197,8 +252,8 @@ snapshot; if present, the grid must match the snapshot before PSSI is saved.
 Neither path replaces an existing populated grid. Loaded publication never installs
 or retimes the native grid.
 
-The worker's decoded clock must agree with the grid's source clock. The supplied
-Track Analysis worker preserves encoded MP3/AAC timing. Its AAC-LC decoder returns
+The analyzer's decoded clock must agree with the grid's source clock. The supplied
+Track Analysis C decoder preserves encoded MP3/AAC timing. Its AAC-LC decoder returns
 1024 source frames per access unit and restores the first 1024-frame slot suppressed
 by FAAD's overlap initialization as silence. Remaining encoder priming stays in the
 audio. MP4 edit-list start/duration metadata is explicit; it is not automatically
