@@ -36,7 +36,7 @@ class SlipCapture(unittest.TestCase):
                 asm = pathlib.Path(temporary) / "entry.o"
                 subprocess.run([cc, *flags, "-c", str(PROBE / "native/azmod/sdk_cache_entry.S"), "-o", str(asm)], check=True, capture_output=True, text=True)
                 objects.append(str(asm))
-            subprocess.run([cc, "-std=gnu11", *flags, *extra, "-pthread", str(ROOT / "tests/fixtures/slip-capture-test.c"), *objects, str(ROOT / "tests/fixtures/native-unwind.S"), "-lc++" if platform.system() == "Darwin" else "-lstdc++", "-o", str(binary)], check=True, capture_output=True, text=True)
+            subprocess.run([cc, "-std=gnu11", *flags, *extra, "-pthread", str(ROOT / "tests/fixtures/slip-capture-test.c"), *objects, str(ROOT / "tests/fixtures/native-unwind.c"), "-lc++" if platform.system() == "Darwin" else "-lstdc++", "-ldl", "-o", str(binary)], check=True, capture_output=True, text=True)
             for mode in modes:
                 result = subprocess.run([str(binary), mode], capture_output=True, text=True, timeout=10)
                 self.assertIn("SLIP_NATIVE_FORWARD_BASELINE_OK", result.stdout)

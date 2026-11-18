@@ -16,6 +16,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CORE_REPOSITORY: ${{ github.repository_owner }}/xdj-az-mods
+
 jobs:
   compare:
     runs-on: ubuntu-latest
@@ -29,7 +32,7 @@ jobs:
             *[!0-9a-f]* | "") echo "include/CORE-COMMIT must hold one full commit id"; exit 1 ;;
           esac
           [ ${#sha} -eq 40 ] || { echo "include/CORE-COMMIT must hold a 40-character commit id"; exit 1; }
-          url="https://raw.githubusercontent.com/Kyle-Hosman/xdj-az-mods/$sha/src/azmod/azmod-mod.h"
+          url="https://raw.githubusercontent.com/$CORE_REPOSITORY/$sha/src/azmod/azmod-mod.h"
           curl -fsSL "$url" -o core.h
           if cmp -s core.h include/azmod-mod.h; then
             echo "include/azmod-mod.h matches the core at $sha"
@@ -55,7 +58,7 @@ jobs:
           core="$RUNNER_TEMP/xdj-az-mods"
           sha=$(tr -d '[:space:]' < include/CORE-COMMIT)
           git init "$core"
-          git -C "$core" fetch --depth=1 https://github.com/Kyle-Hosman/xdj-az-mods.git "$sha"
+          git -C "$core" fetch --depth=1 "https://github.com/$CORE_REPOSITORY.git" "$sha"
           git -C "$core" checkout --detach FETCH_HEAD
           test "$(git -C "$core" rev-parse HEAD)" = "$sha"
           test -z "$(git -C "$core" status --porcelain)"
@@ -65,7 +68,6 @@ jobs:
         env:
           AZ_COMMAND_REAL_X: '1'
           HOST_CC: clang
-          HOST_CXX: clang++
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           xvfb-run -a python3 - <<'PY'
