@@ -7,7 +7,7 @@ static const az_analysis_v1 *analysis;
 static const az_observation_v1 *observations;
 static az_deck_subscription subscription;
 static uint64_t request_id;
-static int releasing;
+static int releasing, copying;
 static az_analysis_phrase_v1 phrases[1024];
 static az_vocal_frame_v1 vocals[25840];
 static int event_valid(const az_deck_status_event_v1 *event) {
@@ -47,23 +47,31 @@ static void read_result(void) {
         core->log(ID, "copied %u phrases and %u vocal frames at source rate %u",
                   result.phrases.count, result.vocals.count, result.source_rate);
     else core->log(ID, "analysis result read: %d", rc);
-    releasing = 1;
+    copying = 0; releasing = 1;
 }
-static void tick(void) {
-    if (!request_id) return;
-    if (releasing) {
-        int rc = analysis->release(ID, request_id);
-        if (rc == AZ_BUSY) return;
-        request_id = 0; releasing = 0;
-        return;
-    }
+static void release_result(void) {
+    int rc = analysis->release(ID, request_id);
+    if (rc == AZ_BUSY) return;
+    request_id = 0; releasing = 0;
+}
+static void observe_result(void) {
     az_analysis_status_v1 status = {.size = sizeof status};
     int rc = analysis->status(ID, request_id, &status);
     if (rc == AZ_BUSY) return;
     if (rc != AZ_OK) { core->log(ID, "analysis status: %d", rc); releasing = 1; return; }
     if (status.state < AZ_ANALYSIS_COMPLETE) return;
     core->log(ID, "analysis state %u result %d: %s", status.state, status.result, status.diagnostic);
-    read_result();
+    /* Terminal AZ_BUSY is a failed outcome, not result-lock contention. */
+    if (status.state == AZ_ANALYSIS_COMPLETE && status.result == AZ_OK) {
+        copying = 1;
+        read_result();
+    } else releasing = 1;
+}
+static void tick(void) {
+    if (!request_id) return;
+    if (releasing) release_result();
+    else if (copying) read_result();
+    else observe_result();
 }
 static int service_ready(void) {
     return AZ_ANALYSIS_HAS(analysis, request) && AZ_ANALYSIS_HAS(analysis, status) &&
@@ -84,7 +92,7 @@ static int init(const az_core_v1 *c) {
 static void stop(void) {
     if (request_id) { analysis->cancel(ID, request_id); analysis->release(ID, request_id); }
     if (subscription) observations->deck_status_release(ID, subscription);
-    request_id = subscription = 0; releasing = 0;
+    request_id = subscription = 0; releasing = copying = 0;
 }
 static const char *const firmware[] = {"any", NULL};
 static const az_mod_v1 mod = {.abi = AZ_MOD_ABI, .size = sizeof mod, .id = ID,
