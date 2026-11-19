@@ -73,11 +73,15 @@ Use `compare_timestamps()` with the source's actual clock for comparisons.
 
 Requests retain copied input records only. No mod pointer or callback remains
 borrowed asynchronously. Failed initialization and live disable retire the
-owner lifetime: new requests and late publication are refused, pending work is
+owner lifetime: new requests and new publication admission are refused, pending work is
 cancelled, and active decoder children are joined before their owned resources
 are reclaimed. Re-enable creates a distinct lifetime; old request IDs cannot
 become another owner's work. One owner's retirement does not stop built-in work
 or another owner's request.
+
+Core rechecks the owner after blocking source/native validation before admitting
+publication. Retirement after that check cannot undo writes already in progress;
+successfully published components remain available for later reuse.
 
 The SDK exposes no audio locator lease, raw publication packet, model file or
 native pointer. Source qualification, stable decoder inputs, native maps,
