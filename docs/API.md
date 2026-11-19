@@ -1205,11 +1205,14 @@ There is no command-status polling fallback or release retry. Check each member 
 `AZ_LIB_HAS`. See [callback delivery](13-track-data.md#callback-delivery) and
 [asynchronous command ownership](13-track-data.md#asynchronous-command-ownership).
 
-Background analysis workers use the optional [track analysis service](18-track-analysis.md)
-to obtain read-only source locators and publish missing grid/phrase/vocal data.
-The v2 opens independently request phrases and PVDI; existing analysis is preserved.
-`vocal_intervals` and `vocal_intervals_loaded` return copied `[start_s, stop_s)` vocal
-segments on a worker, for qualified USB and completed Beatport tracks.
+The [core analysis service](18-track-analysis.md) owns decoding, phrase/vocal
+computation, bounded workers, native publication and linking. Discover it with
+`analysis_service(AZ_ANALYSIS_ABI)` and check `AZ_ANALYSIS_HAS` for each member.
+Requests select qualified sources, components and execution settings; status distinguishes
+admission, saved components and final publication outcomes. Results and vocal intervals
+are copied into caller buffers. No model, decoder, source locator or raw publication
+packet crosses the SDK boundary. The [analysis client](../examples/analysis-client)
+exercises computation and result retrieval through this service.
 
 ## Beatport login service
 

@@ -32,6 +32,12 @@ class TrackDataHarnessTests(unittest.TestCase):
             self.compile_fixture(self.root / "tests/fixtures/harness-track-data.c", binary)
             subprocess.run([str(binary)], check=True, capture_output=True, text=True)
 
+    def test_analysis_client_computation_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "analysis-client"
+            self.compile_fixture(self.root / "tests/fixtures/analysis-client.c", binary)
+            subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+
     def test_analysis_service_checks_version_and_member_presence(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "analysis-abi"
