@@ -40,6 +40,13 @@ linking. Transaction failure can leave durable reusable components; a later
 request can reuse them. There is no crash-recovery journal or atomic multi-file
 publication guarantee.
 
+Distinguish an operation's return code from the retained outcome in
+`status.result`. After `status` returns `AZ_OK`, a failed or cancelled state is
+terminal and should proceed to `release`. This includes `AZ_ANALYSIS_FAILED`
+with `status.result == AZ_BUSY`; requesting its result cannot turn that failure
+into a successful computation. An `AZ_BUSY` return from the `status` operation
+itself indicates contention and can be retried.
+
 Progress does not depend on status polling, mod ticks, painting or callbacks.
 `cancel` revokes pending/running work; `release` also discards the retained
 request. Both may return `AZ_BUSY` under bounded contention. A publication that
@@ -47,13 +54,17 @@ already passed its commit point cannot be rolled back by cancellation.
 
 ## Copied results and vocals
 
-For a completed computation, `result` copies typed phrase and vocal arrays into
-caller buffers. Initialize the result's `size`. A NULL/zero-capacity sizing read
-returns `AZ_LIMIT` with counts and NULL array pointers. Provide enough capacity
+Call `result` only after `status` returns `AZ_OK` with
+`state == AZ_ANALYSIS_COMPLETE` and `status.result == AZ_OK`. It copies typed
+phrase and vocal arrays into caller buffers. Initialize the result's `size`.
+A NULL/zero-capacity sizing read returns `AZ_LIMIT` with counts and NULL array
+pointers. Provide enough capacity
 for both arrays to obtain `AZ_OK`; there is no partial array copy. `AZ_PENDING`
-means computation/publication is still pending. An already-populated source can
-complete without producing new arrays; use the stored track-data and interval
-readers for that source.
+means computation/publication is still pending. An `AZ_BUSY` return while
+copying a successful result can be retried, as can `AZ_BUSY` from `release`.
+An already-populated source completes with `AZ_ANALYSIS_COMPLETE` and
+`status.result == AZ_NOT_FOUND`, without new result arrays. Release that request
+and use the stored track-data and interval readers for that source.
 
 Copied bytes belong to the caller and remain valid after release or owner
 retirement. Phrase entries use one-based native grid ordinals, not timestamps.
