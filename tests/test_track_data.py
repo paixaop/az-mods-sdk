@@ -32,6 +32,12 @@ class TrackDataHarnessTests(unittest.TestCase):
             self.compile_fixture(self.root / "tests/fixtures/harness-track-data.c", binary)
             subprocess.run([str(binary)], check=True, capture_output=True, text=True)
 
+    def test_retired_analysis_slot_preserves_library_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "analysis-abi"
+            self.compile_fixture(self.root / "tests/fixtures/analysis-abi.c", binary)
+            subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+
     def test_loop_watch_declares_the_status_service_minimum(self):
         manifest = json.loads((self.root / "examples/loop-watch/azmod.json").read_text())
         header = (self.root / "include/azmod-mod.h").read_text()
