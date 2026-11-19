@@ -28,7 +28,8 @@ struct cue_input {
 };
 struct cue_state {
     const az_core_v1 *core;
-    const az_library_v1 *lib;
+    const az_observation_v1 *lib;
+    const az_commands_v1 *control;
     uint64_t sequence, highwater, commands, worker_started_ns, worker_idle_deadline_ns, worker_drain_deadline_ns;
     struct cue_input active;
     int pending, terminal, acknowledged;
@@ -337,7 +338,7 @@ static void cue_complete(const az_command_completion *c, void *user)
         cue.terminal = 1;
         cue_terminal = c->result;
         cue_emit("terminal", &cue.active, AZ_OK, &cue_terminal, 0);
-        int rc = cue.lib->command_acknowledge(ID, cue.active.id);
+        int rc = cue.control->command_acknowledge(ID, cue.active.id);
         cue.acknowledged = rc == AZ_OK;
         cue_emit("acknowledge", &cue.active, rc, &cue_terminal, 0);
     } else if (cue_released(c)) {
@@ -369,7 +370,7 @@ static int cue_cancel_action(const struct cue_input *v)
 {
     if (!cue.pending || v->id != cue.active.id || v->deck != cue.active.deck || !cue_command_empty(v)) return cue_refuse(v, AZ_INVALID);
     az_command_result r = { .size = sizeof r };
-    int rc = cue.lib->command_cancel(ID, v->id, &r);
+    int rc = cue.control->command_cancel(ID, v->id, &r);
     int result_valid = (rc == AZ_OK || rc == AZ_PENDING || rc == AZ_STALE) && cue_result(&r, v->id);
     cue_emit("cancel", &cue.active, rc, result_valid ? &r : NULL, 0);
     return rc;
@@ -402,7 +403,7 @@ static int cue_submit(const struct cue_input *v)
     az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = v->op, .deck = v->deck, .request_id = v->id, .expected_load_generation = v->load, .expected_revision = v->revision, .deadline_ns = v->deadline, .quantization = AZ_QUANTIZE_NATIVE, .flags = v->flags, .classification = v->classification, .entry_id = v->entry, .position_s = v->position, .end_s = v->end, .beats = v->beats, .rgb = v->rgb };
     memcpy(request.comment, v->comment, sizeof request.comment);
     az_command_result r = { .size = sizeof r };
-    int rc = cue.lib->command_submit_async(ID, &request, cue_complete, &cue, &r);
+    int rc = cue.control->command_submit_async(ID, &request, cue_complete, &cue, &r);
     cue_emit("submit", v, rc, rc != AZ_INVALID && rc != AZ_BUSY && cue_result(&r, v->id) ? &r : NULL, 0);
     if (rc == AZ_OK) {
         cue.active = *v;
@@ -529,12 +530,12 @@ static void *cue_worker(void *unused)
 }
 static int cue_core_valid(const az_core_v1 *core)
 {
-    if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, data_dir) || !AZ_HAS(core, thread_start) || !AZ_HAS(core, library_service) || !AZ_HAS(core, log) || !AZ_HAS(core, post_ui)) return 0;
+    if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, data_dir) || !AZ_HAS(core, thread_start) || !AZ_HAS(core, observation_service) || !AZ_HAS(core, command_service) || !AZ_HAS(core, log) || !AZ_HAS(core, post_ui)) return 0;
     return 1;
 }
-static int cue_library_valid(const az_library_v1 *l)
+static int cue_library_valid(const az_observation_v1 *l, const az_commands_v1 *control)
 {
-    if (!AZ_LIB_HAS(l, data_capabilities) || !AZ_LIB_HAS(l, deck_snapshot) || !AZ_LIB_HAS(l, native_cues) || !AZ_LIB_HAS(l, command_submit_async) || !AZ_LIB_HAS(l, command_acknowledge) || !AZ_LIB_HAS(l, command_cancel)) return 0;
+    if (!AZ_OBSERVATION_HAS(l, data_capabilities) || !AZ_OBSERVATION_HAS(l, deck_snapshot) || !AZ_OBSERVATION_HAS(l, native_cues) || !AZ_COMMANDS_HAS(control, command_submit_async) || !AZ_COMMANDS_HAS(control, command_acknowledge) || !AZ_COMMANDS_HAS(control, command_cancel)) return 0;
     return 1;
 }
 
@@ -552,8 +553,9 @@ static int cue_create_results(const char *path)
 static int init(const az_core_v1 *core)
 {
     if (!cue_core_valid(core)) return -1;
-    const az_library_v1 *l = core->library_service(AZ_LIBRARY_ABI);
-    if (!cue_library_valid(l)) return -1;
+    const az_observation_v1 *l = core->observation_service(AZ_OBSERVATION_ABI);
+    const az_commands_v1 *control = core->command_service(AZ_COMMANDS_ABI);
+    if (!cue_library_valid(l, control)) return -1;
     memset(&cue, 0, sizeof cue);
     atomic_init(&cue.io_failed, 0);
     atomic_init(&cue.ui_ready, 0);
@@ -563,6 +565,7 @@ static int init(const az_core_v1 *core)
     atomic_init(&cue_logs.consumed, 0);
     cue.core = core;
     cue.lib = l;
+    cue.control = control;
     az_data_capabilities caps = { .size = sizeof caps };
     if (l->data_capabilities(&caps) != AZ_OK || !cue_worker_begin(cue_now())) return -1;
     cue.commands = caps.commands;

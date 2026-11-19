@@ -27,8 +27,12 @@ static int poll_trap(int deck, az_deck_snapshot *out)
     assert(0);
     return AZ_FAILED;
 }
-static const az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service, .on_deck_status = subscribe, .deck_status_release = release, .deck_snapshot = poll_trap };
+static const az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service,   };
+static az_observation_v1 service_observation = { .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .on_deck_status = subscribe, .deck_status_release = release, .deck_snapshot = poll_trap };
+static az_commands_v1 service_commands = { .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands };
 const az_library_v1 *library = &service;
+const az_observation_v1 *observation = &service_observation;
+const az_commands_v1 *commands = &service_commands;
 static unsigned drawn_lines, redraws;
 static char drawn_title[116];
 static uint32_t text_color(int role) { return (uint32_t)role; }

@@ -5,6 +5,8 @@
 #include <stdarg.h>
 #include "../../examples/cue-command-probe/probe.c"
 static az_library_v1 service;
+static az_observation_v1 service_observation;
+static az_commands_v1 service_commands;
 static az_core_v1 host;
 static char directory[128];
 static int submits, acks, submit_status, malformed, drop, clock_bad;
@@ -25,6 +27,12 @@ static const char *data_dir(const char *id)
     return directory;
 }
 static const az_library_v1 *library(uint32_t abi) { return abi == AZ_LIBRARY_ABI ? &service : NULL; }
+static const az_observation_v1 *library_observation(uint32_t abi)
+{ return abi == AZ_OBSERVATION_ABI ? &service_observation : NULL; }
+
+static const az_commands_v1 *library_commands(uint32_t abi)
+{ return abi == AZ_COMMANDS_ABI ? &service_commands : NULL; }
+
 static int caps(az_data_capabilities *out)
 {
     out->version = AZ_DATA_VERSION;
@@ -131,8 +139,10 @@ int main(void)
 {
     strcpy(directory, "/tmp/cue-async.XXXXXX");
     assert(mkdtemp(directory));
-    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service, .data_capabilities = caps, .deck_snapshot = snapshot, .native_cues = native_cues, .command_submit_async = submit, .command_acknowledge = ack, .command_cancel = forbidden_poll, .command_poll = forbidden_poll, .command_release = forbidden_release, .data_event = forbidden_event };
-    host = (az_core_v1){ .abi = AZ_MOD_ABI, .size = sizeof host, .log = log_line, .data_dir = data_dir, .library_service = library, .thread_start = start, .post_ui = post };
+    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service,         .data_event = forbidden_event };
+    service_observation = (az_observation_v1){ .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = caps, .deck_snapshot = snapshot, .native_cues = native_cues };
+    service_commands = (az_commands_v1){ .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands, .command_submit_async = submit, .command_acknowledge = ack, .command_cancel = forbidden_poll, .command_poll = forbidden_poll, .command_release = forbidden_release };
+    host = (az_core_v1){ .abi = AZ_MOD_ABI, .size = sizeof host, .log = log_line, .data_dir = data_dir, .library_service = library, .observation_service = library_observation, .command_service = library_commands, .thread_start = start, .post_ui = post };
     assert(!init(&host));
     for (unsigned outcome = AZ_COMMAND_APPLIED; outcome <= AZ_COMMAND_UNCERTAIN; outcome++) {
         struct cue_input r = request(outcome);
@@ -214,7 +224,7 @@ int main(void)
     notify(AZ_COMMAND_COMPLETION_RELEASED, AZ_COMMAND_APPLIED, 1);
     cue_flush();
     assert(!cue.pending);
-    service.size = offsetof(az_library_v1, command_submit_async);
+    service_commands.size = offsetof(az_commands_v1, command_submit_async);
     assert(init(&host) == -1);
     snprintf(path, sizeof path, "%s/results.%ld.log", directory, (long)getpid());
     assert(!unlink(path));

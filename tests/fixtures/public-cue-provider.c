@@ -14,10 +14,10 @@ static unsigned client_starts, client_logs, client_mode;
 static void *(*client_worker)(void *);
 static void *client_arg;
 static char client_lines[32][768];
-static const az_library_v1 client_library = { .abi = AZ_LIBRARY_ABI, .size = sizeof client_library, .data_capabilities = sdk_data_capabilities, .deck_snapshot = sd_deck_snapshot_v1 };
-static const az_library_v1 *client_service(uint32_t abi)
+static const az_observation_v1 client_library = { .abi = AZ_OBSERVATION_ABI, .size = sizeof client_library, .data_capabilities = sdk_data_capabilities, .deck_snapshot = sd_deck_snapshot_v1 };
+static const az_observation_v1 *client_service(uint32_t abi)
 {
-    assert(abi == AZ_LIBRARY_ABI);
+    assert(abi == AZ_OBSERVATION_ABI);
     return &client_library;
 }
 static int client_subscribe(const char *id, void (*fn)(int, int, void *), void *user)
@@ -80,7 +80,7 @@ int main(int argc, char **argv)
     puts("REAL_CUE_PROVIDER_EMPTY: all4 unknown, actual data_capabilities/snapshot ran");
     fflush(stdout);
     if (client_mode == 1) g_cm_loading = 1;
-    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .library_service = client_service, .on_deck_event = client_subscribe, .thread_start = client_thread, .log = client_log };
+    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .observation_service = client_service, .on_deck_event = client_subscribe, .thread_start = client_thread, .log = client_log };
     int rc = az_mod_v1_entry()->init(&core);
     if (client_mode == 1) {
         assert(rc == -1 && !client_starts && !client_worker);

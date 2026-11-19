@@ -697,3 +697,27 @@ A positive source interval whose playback-duration calculation underflows to zer
 `AZ_INTERVAL_PLAYBACK` unavailable. Endpoints equivalent within the stored time window
 produce a valid zero source/playback duration. Failed or invalid monotonic clock reads yield an unavailable timestamp
 of zero instead of uninitialized or wrapped nanoseconds.
+
+## Focused services and ABI 2
+
+The core API and mod manifests use ABI 2. Rebuild consumers against this header;
+ABI 1 packages are rejected. `library_service(AZ_LIBRARY_ABI)` owns stored track
+data, tickets, waveforms, events and time conversion. The former direct core
+aliases and mixed observation/command table entries are removed.
+
+Use `observation_service(AZ_OBSERVATION_ABI)` for capability reads, copied deck
+state, native cues and status subscriptions. `command_target(deck, load_epoch,
+&target)` qualifies the accepted status LOAD epoch against current native load,
+cue revision, source clock and command capabilities. The result owns its copied
+deck and cue records. A changing source, cue set, clock or capability returns
+`AZ_STALE`; missing loaded observations return `AZ_PENDING`. Errors leave the
+output unchanged. Submission still checks current identity and revision.
+
+Use `command_service(AZ_COMMANDS_ABI)` for commands. Polling clients submit, poll
+and release retained results. Completion listeners receive terminal results and
+release them. Asynchronous clients submit with a callback, acknowledge the
+terminal record and wait for RELEASED. These delivery modes remain distinct;
+none of them requires client polling to advance native execution or cleanup.
+Check each table's ABI, size and required members with `AZ_OBSERVATION_HAS` or
+`AZ_COMMANDS_HAS`. Missing services are an explicit unsupported result, without
+retrying a former interface.

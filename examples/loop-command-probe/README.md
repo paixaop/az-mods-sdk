@@ -3,7 +3,8 @@
 A normal-loader development client for exercising the public asynchronous loop
 command API in a disposable firmware emulator. It installs no native hooks and
 performs no operation until an explicit request file arrives. It uses only
-`core->library_service(1)` and its own `core->data_dir`.
+`core->observation_service(AZ_OBSERVATION_ABI)` and
+`core->command_service(AZ_COMMANDS_ABI)` and its own `core->data_dir`.
 
 Build with `tools/azmod-pack build examples/loop-command-probe`, then package with
 `tools/azmod-pack package examples/loop-command-probe`. Stage through the normal

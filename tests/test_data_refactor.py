@@ -32,6 +32,10 @@ class DataRefactor(unittest.TestCase):
             else:
                 self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 
+    def test_public_slip_status(self):
+        self.run_fixture("slip-status.c")
+        self.run_fixture("slip-status.c", sanitize=True)
+
     def test_phrase_decoding(self):
         self.run_fixture("phrases.c")
         self.run_fixture("phrases.c", sanitize=True)
@@ -95,8 +99,8 @@ class DataRefactor(unittest.TestCase):
              'command.phase = WAIT_TERMINAL;',
              'command.phase = result.outcome == AZ_COMMAND_ACCEPTED ? WAIT_TERMINAL : IDLE;'),
             ('control.c', 'inspector-control.c',
-             'status = library->command_submit_async(ID, &request, complete, &command, &result);',
-             'status = library->command_submit_async(ID, &request, complete, &command, &result); '
+             'status = commands->command_submit_async(ID, &request, complete, &command, &result);',
+             'status = commands->command_submit_async(ID, &request, complete, &command, &result); '
              'if (status == AZ_INVALID) snprintf(lines[3], sizeof lines[3], "invalid outcome %u", result.outcome);'),
         ]
         for source, fixture, old, new in variants:

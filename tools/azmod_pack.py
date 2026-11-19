@@ -35,7 +35,7 @@ import zipfile
 import zlib
 
 SDK_VERSION = "1.2.8"   # = the AZ-MODS release whose core it matches; the template pins v<this>
-ABI = 1
+ABI = 2
 
 # The package container format. One place to change it.
 PACKAGE_FORMAT = "zip"            # "zip" or "tar.gz"

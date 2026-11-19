@@ -52,12 +52,26 @@ static int deck(int index, az_deck_snapshot *out)
     (void)out;
     return AZ_OK;
 }
-static az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service, .data_capabilities = caps, .deck_snapshot = deck };
+static az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service,  };
+static az_observation_v1 service_observation = { .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = caps, .deck_snapshot = deck };
+static az_commands_v1 service_commands = { .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands };
 static const az_library_v1 *get_service(uint32_t abi)
 {
     assert(abi == AZ_LIBRARY_ABI);
     return &service;
 }
+static const az_observation_v1 *get_service_observation(uint32_t abi)
+{
+    assert(abi == AZ_OBSERVATION_ABI);
+    return &service_observation;
+}
+
+static const az_commands_v1 *get_service_commands(uint32_t abi)
+{
+    assert(abi == AZ_COMMANDS_ABI);
+    return &service_commands;
+}
+
 static int screen_register(const char *id, const az_screen_v1 *screen)
 {
     assert(!strcmp(id, LIBRARY_INSPECTOR_ID));
@@ -84,7 +98,7 @@ static void paint(az_draw *d, int x, int y, const char *text, int px, uint32_t r
 static void redraw(void) { ++redrawn; }
 int main(void)
 {
-    az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .register_screen = screen_register, .log = log_line, .color = color, .text_width = width, .fill_rect = fill, .draw_text = paint, .request_redraw = redraw };
+    az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .observation_service = get_service_observation, .command_service = get_service_commands, .register_screen = screen_register, .log = log_line, .color = color, .text_width = width, .fill_rect = fill, .draw_text = paint, .request_redraw = redraw };
     assert(init(&c) == 0 && initialized == 4 && registered);
     registered->on_draw(NULL, (az_rect){ 10, 20, 400, 300 }, NULL);
     assert(drawn == 1 && fills == 4 && texts == 3); /* The analysis tab is too wide. */

@@ -14,7 +14,11 @@ static int test_clock(clockid_t id, struct timespec *t)
 #define clock_gettime test_clock
 #include "control.c"
 static az_library_v1 service;
+static az_observation_v1 service_observation;
+static az_commands_v1 service_commands;
 const az_library_v1 *library = &service;
+const az_observation_v1 *observation = &service_observation;
+const az_commands_v1 *commands = &service_commands;
 static int submit_rc, malformed, immediate, acknowledgements, submissions, redraws, in_call;
 static uint64_t submitted_id;
 static az_command_completion_fn callback;
@@ -35,6 +39,12 @@ static void paint(az_draw *d, int x, int y, const char *text, int px, uint32_t r
     ++painted;
 }
 static const az_library_v1 *get_service(uint32_t abi) { return abi == AZ_LIBRARY_ABI ? &service : NULL; }
+static const az_observation_v1 *get_service_observation(uint32_t abi)
+{ return abi == AZ_OBSERVATION_ABI ? &service_observation : NULL; }
+
+static const az_commands_v1 *get_service_commands(uint32_t abi)
+{ return abi == AZ_COMMANDS_ABI ? &service_commands : NULL; }
+
 static int caps(az_data_capabilities *out)
 {
     out->version = AZ_DATA_VERSION;
@@ -95,8 +105,10 @@ static void click(void)
 }
 int main(void)
 {
-    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service, .data_capabilities = caps, .deck_snapshot = snapshot, .command_submit_async = submit, .command_acknowledge = acknowledge };
-    az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .request_redraw = redraw, .color = color, .text_width = width, .draw_text = paint };
+    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service,    };
+    service_observation = (az_observation_v1){ .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = caps, .deck_snapshot = snapshot };
+    service_commands = (az_commands_v1){ .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands, .command_submit_async = submit, .command_acknowledge = acknowledge };
+    az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .observation_service = get_service_observation, .command_service = get_service_commands, .request_redraw = redraw, .color = color, .text_width = width, .draw_text = paint };
     assert(!init(&c));
     tick();
     assert(strstr(lines[1], "available") && strstr(lines[2], "No command"));
@@ -127,7 +139,7 @@ int main(void)
     click();
     assert(command.phase == WAIT_TERMINAL && !acknowledgements);
     /* Capabilities/ticks are irrelevant after admission. */
-    service.data_capabilities = NULL;
+    service_observation.data_capabilities = NULL;
     event(AZ_COMMAND_COMPLETION_RELEASED, AZ_COMMAND_APPLIED, 1);
     assert(command.phase == WAIT_TERMINAL && !acknowledgements);
     az_command_completion bad = { .size = sizeof bad, .version = AZ_DATA_VERSION, .kind = AZ_COMMAND_COMPLETION_TERMINAL, .settled = 1, .result = { sizeof(az_command_result), AZ_DATA_VERSION, AZ_COMMAND_APPLIED, AZ_OK, submitted_id + 1, 1, 1 } };
@@ -161,7 +173,7 @@ int main(void)
     assert(command.phase == WAIT_RELEASED);
     event(AZ_COMMAND_COMPLETION_RELEASED, AZ_COMMAND_APPLIED, 1);
     assert(command.phase == IDLE && !command.id);
-    service.data_capabilities = caps;
+    service_observation.data_capabilities = caps;
     for (unsigned outcome = AZ_COMMAND_REJECTED; outcome <= AZ_COMMAND_UNCERTAIN; outcome++) {
         immediate = 0;
         malformed = 1;
@@ -174,7 +186,7 @@ int main(void)
     }
     assert(acknowledgements == 4);
     int before = submissions;
-    service.size = offsetof(az_library_v1, command_submit_async);
+    service_commands.size = offsetof(az_commands_v1, command_submit_async);
     click();
     assert(status == AZ_UNSUPPORTED && submissions == before);
     return 0;

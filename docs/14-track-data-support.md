@@ -208,7 +208,7 @@ subsequently passed in 2.98 seconds without a production Save change or deadline
 increase. A passing later run does not erase that earlier uncertainty.
 
 These results cover the opt-in native command path through
-`core->library_service(1)`. The generic command adapter remains disabled and the
+`core->command_service(AZ_COMMANDS_ABI)`. The generic command adapter remains disabled and the
 production ownership gate remains required. The checked candidate uses azmod
 `342311f78f86...` and azstem `cbc2df3513ae...`, preserving 108/47 exports and the
 public header. The earlier 2.00 matrix also includes unchanged loop/cue paths

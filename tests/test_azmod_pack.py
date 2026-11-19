@@ -292,8 +292,8 @@ class ManifestChecks(unittest.TestCase):
         m["min_core"] = "1.2.3-rc1"
         self.assertRefused(m, "\"min_core\" must be MAJOR.MINOR.PATCH")
         m = manifest()
-        m["api"] = 2
-        self.assertRefused(m, "\"api\" must be 1")
+        m["api"] = 1
+        self.assertRefused(m, "\"api\" must be 2")
 
     def test_category(self):
         m = manifest()

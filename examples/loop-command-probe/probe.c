@@ -39,7 +39,8 @@ struct probe_plan {
 };
 struct probe_state {
     const az_core_v1 *core;
-    const az_library_v1 *library;
+    const az_observation_v1 *library;
+    const az_commands_v1 *control;
     uint64_t highwater, sequence, commands;
     struct probe_input active;
     az_command_result last;
@@ -277,7 +278,7 @@ static void probe_complete(const az_command_completion *c, void *user)
         probe.last = c->result;
         probe.terminal = 1;
         probe_emit("terminal", &probe.active, AZ_OK, &probe.last);
-        int rc = probe.library->command_acknowledge(ID, probe.active.id);
+        int rc = probe.control->command_acknowledge(ID, probe.active.id);
         probe.acknowledged = rc == AZ_OK;
         probe_emit("acknowledge", &probe.active, rc, &probe.last);
     } else if (probe_released(c)) {
@@ -302,7 +303,7 @@ static int probe_submit(const struct probe_input *v)
     az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = v->op, .deck = v->deck, .request_id = v->id, .expected_load_generation = v->load, .deadline_ns = v->deadline, .quantization = AZ_QUANTIZE_NATIVE, .flags = AZ_COMMAND_NATIVE_LOAD, .position_s = v->position, .end_s = v->end, .beats = v->beats };
     az_command_result result = { .size = sizeof result };
     memset(&probe.last, 0, sizeof probe.last);
-    rc = probe.library->command_submit_async(ID, &request, probe_complete, &probe, &result);
+    rc = probe.control->command_submit_async(ID, &request, probe_complete, &probe, &result);
     probe_emit("submit", v, rc, probe_submit_result_valid(rc, &result, v->id) ? &result : NULL);
     if (probe_submit_result_valid(rc, &result, v->id)) probe.last = result;
     if (rc == AZ_OK) {
@@ -340,7 +341,7 @@ static int probe_cancel_action(const struct probe_input *v)
     if (!probe.pending || v->id != probe.active.id || v->deck != probe.active.deck || !probe_command_empty(v)) return probe_refuse(v, AZ_INVALID);
     if (probe.plan.kind) probe.plan.stopping = 1;
     az_command_result result = { .size = sizeof result };
-    int rc = probe.library->command_cancel(ID, v->id, &result);
+    int rc = probe.control->command_cancel(ID, v->id, &result);
     int valid = probe_cancel_result_valid(rc, &result, v->id);
     probe_emit("cancel", &probe.active, rc, valid ? &result : NULL);
     return rc;
@@ -427,7 +428,7 @@ static void probe_plan_cancel(void)
 {
     if (probe.pending && !probe.terminal) {
         az_command_result result = { .size = sizeof result };
-        int rc = probe.library->command_cancel(ID, probe.active.id, &result);
+        int rc = probe.control->command_cancel(ID, probe.active.id, &result);
         probe_emit("cancel", &probe.active, rc, probe_result_valid(&result, probe.active.id) ? &result : NULL);
     }
 }
@@ -725,13 +726,13 @@ static void *probe_worker(void *unused)
 static int probe_core_valid(const az_core_v1 *core)
 {
     if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, log) || !AZ_HAS(core, data_dir) ||
-        !AZ_HAS(core, thread_start) || !AZ_HAS(core, library_service) || !AZ_HAS(core, post_ui)) return 0;
+        !AZ_HAS(core, thread_start) || !AZ_HAS(core, observation_service) || !AZ_HAS(core, command_service) || !AZ_HAS(core, post_ui)) return 0;
     return 1;
 }
-static int probe_library_valid(const az_library_v1 *lib)
+static int probe_library_valid(const az_observation_v1 *lib, const az_commands_v1 *control)
 {
-    if (!AZ_LIB_HAS(lib, data_capabilities) || !AZ_LIB_HAS(lib, deck_snapshot) || !AZ_LIB_HAS(lib, command_submit_async) ||
-        !AZ_LIB_HAS(lib, command_acknowledge) || !AZ_LIB_HAS(lib, command_cancel)) return 0;
+    if (!AZ_OBSERVATION_HAS(lib, data_capabilities) || !AZ_OBSERVATION_HAS(lib, deck_snapshot) || !AZ_COMMANDS_HAS(control, command_submit_async) ||
+        !AZ_COMMANDS_HAS(control, command_acknowledge) || !AZ_COMMANDS_HAS(control, command_cancel)) return 0;
     return 1;
 }
 
@@ -749,8 +750,9 @@ static int probe_create_results(const char *path)
 static int init(const az_core_v1 *core)
 {
     if (!probe_core_valid(core)) return -1;
-    const az_library_v1 *lib = core->library_service(AZ_LIBRARY_ABI);
-    if (!probe_library_valid(lib)) return -1;
+    const az_observation_v1 *lib = core->observation_service(AZ_OBSERVATION_ABI);
+    const az_commands_v1 *control = core->command_service(AZ_COMMANDS_ABI);
+    if (!probe_library_valid(lib, control)) return -1;
     az_data_capabilities caps = { .size = sizeof caps };
     if (lib->data_capabilities(&caps) != AZ_OK) return -1;
     memset(&probe, 0, sizeof probe);
@@ -760,6 +762,7 @@ static int init(const az_core_v1 *core)
     atomic_init(&probe_logs.consumed, 0);
     probe.core = core;
     probe.library = lib;
+    probe.control = control;
     probe.commands = caps.commands;
     const char *directory = core->data_dir(ID);
     if (!probe_directory_valid(directory)) return -1;

@@ -98,7 +98,7 @@ static void transport_records(void)
     assert(found == 1);
     struct cue_input command = request(200);
     assert(cue_handle(&command) == AZ_OK && cue.pending);
-    service.command_cancel = cancel_request;
+    service_commands.command_cancel = cancel_request;
     struct cue_input cancel = { .pid = (uint64_t)getpid(), .id = 200 };
     strcpy(cancel.action, "cancel");
     const int replies[] = { AZ_OK, AZ_PENDING, AZ_STALE, AZ_INVALID };
@@ -114,7 +114,7 @@ static void transport_records(void)
 int main(void)
 {
     assert(async_fixture_main() == 0);
-    service.size = sizeof service;
+    service_commands.size = sizeof service_commands;
     strcpy(directory, "/tmp/cue-lifetime.XXXXXX");
     assert(mkdtemp(directory) && !init(&host));
     clock_limits();

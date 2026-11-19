@@ -48,9 +48,9 @@ static void loop_changed(const az_deck_status_event_v1 *e, void *user)
 }
 static int init(const az_core_v1 *c)
 {
-    if (!AZ_HAS(c, library_service) || !AZ_HAS(c, log)) return -1;
-    const az_library_v1 *lib = c->library_service(AZ_LIBRARY_ABI);
-    if (!AZ_LIB_HAS(lib, on_deck_status) || !AZ_LIB_HAS(lib, deck_status_release)) return -1;
+    if (!AZ_HAS(c, observation_service) || !AZ_HAS(c, log)) return -1;
+    const az_observation_v1 *lib = c->observation_service(AZ_OBSERVATION_ABI);
+    if (!AZ_OBSERVATION_HAS(lib, on_deck_status) || !AZ_OBSERVATION_HAS(lib, deck_status_release)) return -1;
     core = c;
     const az_deck_watch_v1 watch = { sizeof watch, AZ_DATA_VERSION, AZ_STATUS_ALL_DECKS, 0, AZ_STATUS_TOPIC(AZ_STATUS_LOOP) };
     return lib->on_deck_status(ID, &watch, loop_changed, decks, &subscription) == AZ_OK ? 0 : -1;

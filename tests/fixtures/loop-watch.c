@@ -37,15 +37,15 @@ static int release(const char *id, az_deck_subscription handle)
     assert(!"process-lifetime listener must remain registered");
     return AZ_FAILED;
 }
-static az_library_v1 library = { .abi = AZ_LIBRARY_ABI, .size = sizeof library, .on_deck_status = subscribe, .deck_status_release = release };
-static const az_library_v1 *service(uint32_t abi)
+static az_observation_v1 library = { .abi = AZ_OBSERVATION_ABI, .size = sizeof library, .on_deck_status = subscribe, .deck_status_release = release };
+static const az_observation_v1 *service(uint32_t abi)
 {
-    assert(abi == AZ_LIBRARY_ABI);
+    assert(abi == AZ_OBSERVATION_ABI);
     return &library;
 }
 int main(void)
 {
-    const az_core_v1 host = { .abi = AZ_MOD_ABI, .size = sizeof host, .log = log_line, .library_service = service };
+    const az_core_v1 host = { .abi = AZ_MOD_ABI, .size = sizeof host, .log = log_line, .observation_service = service };
     assert(!init(&host) && registrations == 1 && subscription == 1);
     assert(az_mod_v1_entry()->init == init);
     az_status_loop_v1 loop = { .header = { .size = sizeof loop, .version = AZ_DATA_VERSION } };
@@ -74,7 +74,7 @@ int main(void)
     e.lost_topics = AZ_STATUS_TOPIC(AZ_STATUS_LOOP);
     callback(&e, callback_user);
     assert(logs == 3 && strstr(line, "lost="));
-    library.size = offsetof(az_library_v1, on_deck_status);
+    library.size = offsetof(az_observation_v1, on_deck_status);
     assert(init(&host) == -1 && registrations == 1);
     assert(init(NULL) == -1);
     puts("PASS loop watch: retained zero, exit, empty baseline and recovery");
