@@ -15,11 +15,16 @@ static int event_valid(const az_deck_status_event_v1 *event) {
     if (event->deck >= 4 || !event->load_epoch || !event->view) return 0;
     return event->view->size >= sizeof *event->view && event->view->version == AZ_DATA_VERSION;
 }
+static int state_current(const az_status_field_info_v1 *info, uint64_t epoch) {
+    return info->scope == AZ_STATUS_UNIT ||
+           (info->scope == AZ_STATUS_LOAD_SCOPE && info->scope_id == epoch);
+}
 static int ready_load(const az_deck_status_event_v1 *event) {
     if (!event_valid(event) || !event->view->load) return 0;
     const az_status_load_v1 *load = event->view->load;
     if (load->header.size < sizeof *load || load->header.version != AZ_DATA_VERSION) return 0;
     if (!(load->header.valid & (UINT64_C(1) << AZ_STATUS_LOAD_STATE))) return 0;
+    if (!state_current(&load->state_info, event->load_epoch)) return 0;
     return load->state == AZ_STATUS_LOAD_LOADED &&
            load->state_info.info.availability == AZ_AVAIL_READY &&
            load->state_info.info.provenance == AZ_PROV_NATIVE;

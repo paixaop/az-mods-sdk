@@ -51,13 +51,15 @@ int main(void) {
     assert(client->init(&host) == AZ_OK && observed);
     az_status_load_v1 load = {.header = {.size = sizeof load, .version = AZ_DATA_VERSION,
         .valid = UINT64_C(1) << AZ_STATUS_LOAD_STATE}, .state = AZ_STATUS_LOAD_LOADED,
-        .state_info = {.info = {.availability = AZ_AVAIL_READY, .provenance = AZ_PROV_NATIVE}}};
+        .state_info = {.scope = AZ_STATUS_LOAD_SCOPE, .scope_id = 37, .info = {.availability = AZ_AVAIL_READY, .provenance = AZ_PROV_NATIVE}}};
     az_deck_status_view_v1 view = {.size = sizeof view, .version = AZ_DATA_VERSION, .load = &load};
     az_deck_status_event_v1 event = {.size = sizeof event, .version = AZ_DATA_VERSION,
         .deck = 2, .load_epoch = 37, .view = &view};
     observed(NULL, NULL); event.version++; observed(&event, NULL); assert(!requests); event.version--;
     load.header.valid = 0; observed(&event, NULL); assert(!requests);
     load.header.valid = UINT64_C(1) << AZ_STATUS_LOAD_STATE;
+    load.state_info.scope_id = 36; observed(&event, NULL); assert(!requests);
+    load.state_info.scope_id = 37;
     observed(&event, NULL); observed(&event, NULL); assert(requests == 1);
     client->tick(); assert(!copies); next_status = AZ_OK; client->tick(); assert(copies == 1);
     assert(phrases[0].start_beat == 4 && vocals[0].activity == 3);
