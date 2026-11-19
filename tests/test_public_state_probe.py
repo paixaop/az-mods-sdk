@@ -49,13 +49,13 @@ class PublicStateProbe(unittest.TestCase):
 
     def test_native_public_guards(self):
         original=(ROOT/"examples/public-state-probe/probe.c").read_text()
-        variants=[("master-bit","(s->valid & AZ_LIVE_MASTER) &&","1 &&"),
-                  ("native-load-bit","(s->valid & AZ_LIVE_NATIVE_LOAD) &&","1 &&"),
-                  ("master-clock","compare_timestamps(v.master_ns, query_ns, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL","1"),
-                  ("native-load-clock","compare_timestamps(v.load_ns, query_ns, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL","1"),
-                  ("native-generation","s->native_load_generation && v.load_unit","1 && v.load_unit"),
-                  ("version","s->size < offsetof(az_deck_snapshot, deck) + sizeof s->deck || s->version != AZ_DATA_VERSION) return v;","s->size < offsetof(az_deck_snapshot, deck) + sizeof s->deck || 0) return v;"),
-                  ("source-separation","v.native_load = s->native_load_generation;","v.native_load = s->load_generation;")]
+        variants=[("master-bit","probe_field_available(s, deck, AZ_LIVE_MASTER) &&","((void)deck, 1) &&"),
+                  ("native-load-bit","probe_field_available(s, deck, AZ_LIVE_NATIVE_LOAD) &&","((void)deck, 1) &&"),
+                  ("master-clock","probe_receipt_valid(1, v->master_rev, v->master_ns, query)","1"),
+                  ("native-load-clock","probe_receipt_valid(v->load_unit, v->load_epoch, v->load_ns, query)","1"),
+                  ("native-generation","&& s->native_load_generation &&","&& 1 &&"),
+                  ("version","&& s->version == AZ_DATA_VERSION;","&& 1;"),
+                  ("source-separation","v->native_load = s->native_load_generation;","v->native_load = s->load_generation;")]
         for name,old,new in variants:
             with self.subTest(guard=name):
                 self.assertEqual(original.count(old),1)
@@ -67,7 +67,7 @@ class PublicStateProbe(unittest.TestCase):
         old = "a->tempo_valid != b->tempo_valid || a->tempo != b->tempo ||"
         self.assertEqual(original.count(old), 1)
         self.run_fixture(["-DPROBE_CADENCE_TEST", "-DPROBE_MAX_RECORDS=32u", "-DPROBE_MAX_TICKS=12u"],
-                         source=original.replace(old, "a->tempo_rev != b->tempo_rev || a->tempo_ns != b->tempo_ns || " + old), failure=True)
+                         source=original.replace(old, "a->tempo_rev != b->tempo_rev || compare_timestamps(a->tempo_ns, b->tempo_ns, 1000000000, 1000000000, 1) != AZ_TIME_EQUAL || " + old), failure=True)
 
     def test_tempo_format_limit(self):
         # Deliberately short output exercises runtime truncation handling.
@@ -77,13 +77,13 @@ class PublicStateProbe(unittest.TestCase):
     def test_tempo_regression_guards(self):
         original = (ROOT / "examples/public-state-probe/probe.c").read_text()
         variants = [
-            ("tempo-valid", "(s->valid & AZ_LIVE_TEMPO) &&", "1 &&"),
-            ("slider-valid", "(s->valid & AZ_LIVE_TEMPO_SLIDER_LOCKED) &&", "1 &&"),
+            ("tempo-valid", "probe_field_available(s, deck, AZ_LIVE_TEMPO) &&", "((void)deck, 1) &&"),
+            ("slider-valid", "probe_field_available(s, deck, AZ_LIVE_TEMPO_SLIDER_LOCKED) &&", "((void)deck, 1) &&"),
             ("finite", "isfinite(s->tempo) && s->tempo > 20.0 && s->tempo < 400.0", "1"),
             ("boolean", "(s->tempo_slider_locked == 0 || s->tempo_slider_locked == 1)", "1"),
-            ("receipt-clock", "compare_timestamps(value.tempo_ns, query_ns, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL", "1"),
-            ("slider-clock", "compare_timestamps(value.slider_ns, query_ns, 1000000000, 1000000000, 1) <= AZ_TIME_EQUAL", "1"),
-            ("short-tail", "s->size >= offsetof(az_deck_snapshot, tempo_observed_ns) + sizeof s->tempo_observed_ns", "1"),
+            ("receipt-clock", "probe_receipt_valid(v->tempo_state, v->tempo_rev, v->tempo_ns, query)", "1"),
+            ("slider-clock", "probe_receipt_valid(v->slider_unit, v->slider_rev, v->slider_ns, query)", "1"),
+            ("short-tail", "s->size < offsetof(az_deck_snapshot, tempo_observed_ns) + sizeof s->tempo_observed_ns", "0"),
         ]
         for name, old, new in variants:
             with self.subTest(guard=name):
@@ -102,7 +102,7 @@ class PublicStateProbe(unittest.TestCase):
             ("validity", "if (s->valid & AZ_LIVE_MASTER_TEMPO) value.mt = s->master_tempo;", "value.mt = s->master_tempo;", 1),
             ("deck", "probe_library->deck_snapshot(deck, &snapshot)", "probe_library->deck_snapshot(1, &snapshot)", 1),
             ("clock", "if (clock_gettime(CLOCK_MONOTONIC, &time)) return 0;", "(void)clock_gettime(CLOCK_MONOTONIC, &time);", 1),
-            ("budget", "records < PROBE_MAX_RECORDS", "records < PROBE_MAX_RECORDS + 1", 8),
+            ("budget", "records < PROBE_MAX_RECORDS", "records < PROBE_MAX_RECORDS + 1", 1),
         ]
         for name, old, new, count in variants:
             with self.subTest(guard=name):

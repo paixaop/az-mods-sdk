@@ -19,6 +19,15 @@ struct slip_image {
     size_t count;
     int found;
 };
+static int slip_image_segment(struct slip_image *image, const ElfW(Phdr) * p)
+{
+    if (image->count == 16 || image->base > UINTPTR_MAX - p->p_vaddr) return 0;
+    uintptr_t begin = image->base + p->p_vaddr;
+    if (begin > UINTPTR_MAX - p->p_memsz) return 0;
+    image->rx[image->count++] = (struct slip_rx){ begin, begin + p->p_memsz };
+    return 1;
+}
+
 static int slip_main_image(struct dl_phdr_info *info, size_t size, void *user)
 {
     (void)size;
@@ -28,10 +37,7 @@ static int slip_main_image(struct dl_phdr_info *info, size_t size, void *user)
     for (unsigned i = 0; i < info->dlpi_phnum; i++) {
         const ElfW(Phdr) *p = &info->dlpi_phdr[i];
         if (p->p_type != PT_LOAD || !(p->p_flags & PF_X)) continue;
-        if (image->count == 16 || image->base > UINTPTR_MAX - p->p_vaddr) return 1;
-        uintptr_t begin = image->base + p->p_vaddr;
-        if (begin > UINTPTR_MAX - p->p_memsz) return 1;
-        image->rx[image->count++] = (struct slip_rx){ begin, begin + p->p_memsz };
+        if (!slip_image_segment(image, p)) return 1;
     }
     image->found = 1;
     return 1;
@@ -44,6 +50,24 @@ static void slip_stats(uint64_t emitted, uint64_t missed, const char *reason)
                    (unsigned long long)s.saved, (unsigned long long)emitted, (unsigned long long)s.dropped,
                    (unsigned long long)s.rejected, (unsigned long long)missed, reason);
 }
+static void slip_emit_records(uint64_t *next, uint64_t *emitted, uint64_t *missed, uint64_t saved)
+{
+    uint64_t first = saved > 128 ? saved - 127 : 1;
+    if ((*next) < first) {
+        (*missed) += first - (*next);
+        (*next) = first;
+    }
+    while ((*next) <= saved) {
+        struct slip_capture_record record;
+        if (!slip_capture_read((*next), &record)) break;
+        slip_core->log(ID, "SDK_SLIP_CAPTURE v=1 seq=%llu observed_ns=%llu raw=%u receiver=0x%llx caller=0x%llx",
+                       (unsigned long long)record.sequence, (unsigned long long)record.observed_ns, record.raw,
+                       (unsigned long long)record.receiver, (unsigned long long)record.caller);
+        (*emitted)++;
+        (*next)++;
+    }
+}
+
 static void *slip_worker(void *unused)
 {
     (void)unused;
@@ -57,20 +81,7 @@ static void *slip_worker(void *unused)
         if (state > 0) {
             struct slip_capture_stats stats;
             slip_capture_get_stats(&stats);
-            uint64_t first = stats.saved > 128 ? stats.saved - 127 : 1;
-            if (next < first) {
-                missed += first - next;
-                next = first;
-            }
-            while (next <= stats.saved) {
-                struct slip_capture_record record;
-                if (!slip_capture_read(next, &record)) break;
-                slip_core->log(ID, "SDK_SLIP_CAPTURE v=1 seq=%llu observed_ns=%llu raw=%u receiver=0x%llx caller=0x%llx",
-                               (unsigned long long)record.sequence, (unsigned long long)record.observed_ns, record.raw,
-                               (unsigned long long)record.receiver, (unsigned long long)record.caller);
-                emitted++;
-                next++;
-            }
+            slip_emit_records(&next, &emitted, &missed, stats.saved);
             if (tick % 100u == 0) slip_stats(emitted, missed, "running");
             if (stats.saved == 512 && next > stats.saved) {
                 slip_stats(emitted, missed, "record_limit");
@@ -86,20 +97,29 @@ static void *slip_worker(void *unused)
     slip_stats(emitted, missed, "time_limit");
     return NULL;
 }
-static int init(const az_core_v1 *core)
+static int slip_core_valid(const az_core_v1 *core)
 {
     if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, claim_hook) || !AZ_HAS(core, fw_tag) ||
-        !AZ_HAS(core, log) || !AZ_HAS(core, thread_start)) return -1;
+        !AZ_HAS(core, log) || !AZ_HAS(core, thread_start)) return 0;
+    return 1;
+}
+
+static const struct slip_profile *slip_find_profile(const char *tag, const struct slip_image *image)
+{
+    for (size_t i = 0; i < sizeof slip_profiles / sizeof *slip_profiles; i++)
+        if (slip_profile_matches(&slip_profiles[i], tag, image->base, image->rx, image->count)) return &slip_profiles[i];
+    return NULL;
+}
+
+static int init(const az_core_v1 *core)
+{
+    if (!slip_core_valid(core)) return -1;
     const struct slip_profile *profile = NULL;
     const char *tag = core->fw_tag();
     struct slip_image image = { 0 };
     dl_iterate_phdr(slip_main_image, &image);
     if (!image.found) return -1;
-    for (size_t i = 0; i < sizeof slip_profiles / sizeof *slip_profiles; i++)
-        if (slip_profile_matches(&slip_profiles[i], tag, image.base, image.rx, image.count)) {
-            profile = &slip_profiles[i];
-            break;
-        }
+    profile = slip_find_profile(tag, &image);
     if (!profile) return -1;
     if (!slip_capture_arm(image.base + profile->caller)) return -1;
     slip_core = core;

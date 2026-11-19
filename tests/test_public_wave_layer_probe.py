@@ -41,8 +41,8 @@ class PublicWaveLayerProbe(unittest.TestCase):
         controls = [
             ("reserved", " || layered[5] != 0", ""),
             ("ref", "a->source_generation == b->source_generation", "1"),
-            ("inverse", "return !memcmp(recovered, raw, 3);", "return 1;"),
-            ("provenance", "v->info.provenance != (stride == 3 ? AZ_PROV_FILE : AZ_PROV_DERIVED)", "0"),
+            ("inverse", "return !memcmp(recovered, raw, 3);", "(void)recovered; return 1;"),
+            ("provenance", "v->info.provenance != (stride == 3 ? AZ_PROV_FILE : AZ_PROV_DERIVED)", "((void)stride, 0)"),
         ]
         with tempfile.TemporaryDirectory() as temporary:
             for case, before, after in controls:

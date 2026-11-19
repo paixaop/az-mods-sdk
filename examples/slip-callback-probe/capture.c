@@ -50,13 +50,19 @@ extern int slip_capture_test_clock_gettime(clockid_t, struct timespec *);
 #else
 #define capture_clock clock_gettime
 #endif
+static int capture_timespec_valid(const struct timespec *now)
+{
+    const int nonnegative = compare_timestamps(now->tv_sec, 0, 1, 1000000000, 1);
+    const int subsecond = compare_timestamps(now->tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
+    if (nonnegative == AZ_TIME_INVALID || nonnegative == AZ_TIME_BEFORE || subsecond == AZ_TIME_INVALID || subsecond != AZ_TIME_BEFORE) return 0;
+    return 1;
+}
+
 static int capture_time(uint64_t *out)
 {
     struct timespec now;
     if (capture_clock(CLOCK_MONOTONIC, &now)) return 0;
-    const int nonnegative = compare_timestamps(now.tv_sec, 0, 1, 1000000000, 1);
-    const int subsecond = compare_timestamps(now.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
-    if (nonnegative == AZ_TIME_INVALID || nonnegative == AZ_TIME_BEFORE || subsecond == AZ_TIME_INVALID || subsecond != AZ_TIME_BEFORE) return 0;
+    if (!capture_timespec_valid(&now)) return 0;
     uint64_t seconds = (uint64_t)now.tv_sec, nanos = (uint64_t)now.tv_nsec;
     const int range = compare_timestamps(seconds, (UINT64_MAX - nanos) / UINT64_C(1000000000), 1, 1000000000, 1);
     if (range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
@@ -67,11 +73,16 @@ static int capture_time(uint64_t *out)
 }
 #undef capture_clock
 
-static void capture_frame(const struct azce_call *call)
+static int capture_call_valid(const struct azce_call *call)
 {
     uintptr_t expected_caller = atomic_load_explicit(&armed_caller, memory_order_acquire);
-    if (!call || !expected_caller || call->kind != AZCE_KIND_MESSAGE || call->reserved || call->caller_reserved ||
-        call->caller_link != expected_caller) {
+    return call && expected_caller && call->kind == AZCE_KIND_MESSAGE && !call->reserved &&
+           !call->caller_reserved && call->caller_link == expected_caller;
+}
+
+static void capture_frame(const struct azce_call *call)
+{
+    if (!capture_call_valid(call)) {
         count_loss(&rejected);
         return;
     }

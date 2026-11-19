@@ -30,11 +30,15 @@ static void draw(az_draw *d, az_rect area, void *user)
     area.h -= 40;
     pages[active]->draw(d, area, NULL);
 }
+static int tap_in_tabs(const az_event *ev)
+{
+    return ev->kind == AZ_EV_TAP && tabs.w > 0 && ev->x >= tabs.x && ev->x < tabs.x + tabs.w &&
+           ev->y >= tabs.y && ev->y < tabs.y + tabs.h;
+}
 static int input(const az_event *ev, void *user)
 {
     (void)user;
-    if (ev->kind == AZ_EV_TAP && tabs.w > 0 && ev->x >= tabs.x && ev->x < tabs.x + tabs.w &&
-        ev->y >= tabs.y && ev->y < tabs.y + tabs.h) {
+    if (tap_in_tabs(ev)) {
         active = (unsigned)(ev->x - tabs.x) * 4u / (unsigned)tabs.w;
         return 1;
     }

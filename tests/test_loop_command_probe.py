@@ -18,6 +18,7 @@ class LoopCommandProbe(unittest.TestCase):
             run=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
             self.assertEqual(run.returncode,0,run.stdout+run.stderr)
             self.assertIn("PASS ",run.stdout)
+    def test_worker_shutdown(self): self.fixture(name="loop-command-worker.c")
     def test_public_command_lifecycle(self): self.fixture()
     def test_explicit_batches(self): self.fixture(name="loop-command-plan.c")
     def test_batches_asan_ubsan(self):

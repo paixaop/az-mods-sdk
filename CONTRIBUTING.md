@@ -51,3 +51,7 @@ private paths and em dashes out of code, docs and commit messages, using the rul
 
 By contributing you agree that your contribution is licensed under the repository's
 license (GPL-3.0-only).
+
+C complexity and coverage checks use the strict CRAP < 10 target. See
+[the C CRAP workflow](docs/CRAP.md) for baseline selection, fresh coverage, and
+report interpretation.

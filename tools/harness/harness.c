@@ -383,13 +383,15 @@ static int s_register_screen(const char *id, const az_screen_v1 *scr)
 
 /* A screen row supplies the same page that register_screen exposes. Other row
  * kinds need their own harness interaction model and remain unsupported here. */
+static int row_screen_valid(const az_row_v1 *row)
+{
+    return row && row->size >= (int)sizeof *row && row->key && key_ok(row->key) &&
+           strlen(row->key) <= 24 && row->label && row->kind == AZ_ROW_SCREEN && row->screen;
+}
 static int s_register_row(const char *id, const az_row_v1 *row)
 {
     check_id(id, "register_row");
-    if (ctx != CTX_INIT || !row || row->size < (int)sizeof *row ||
-        !row->key || !key_ok(row->key) || strlen(row->key) > 24 ||
-        !row->label || row->kind != AZ_ROW_SCREEN || !row->screen)
-        return -1;
+    if (ctx != CTX_INIT || !row_screen_valid(row)) return -1;
     return s_register_screen(id, row->screen) == 0 ? screens_registered - 1 : -1;
 }
 
@@ -1118,7 +1120,7 @@ static const char *mod_path;
 static void *handle;
 static const az_mod_v1 *mod;
 
-static int load_mod(void)
+static void reset_mod_services(void)
 {
     hs_reset();
     hb_configured = 0;
@@ -1131,18 +1133,24 @@ static int load_mod(void)
     ht_data_user = ht_command_user = NULL;
     ht_sequence = ht_after = 0;
     pthread_mutex_unlock(&ht_mu);
-    handle = dlopen(mod_path, RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        fail(K_INIT, "dlopen: %s", dlerror());
-        return 0;
-    }
+}
+static int mod_descriptor_valid(const az_mod_v1 *value)
+{
+    return value && value->abi == AZ_MOD_ABI && value->size >= (int)(offsetof(az_mod_v1, on_frame) + sizeof value->on_frame) && value->init;
+}
+static int mod_tags_valid(const az_mod_v1 *value)
+{
+    return value->fw_tags && value->fw_tags[0] && !strcmp(value->fw_tags[0], "any") && !value->fw_tags[1];
+}
+static int load_descriptor(void)
+{
     const az_mod_v1 *(*entry)(void) = (const az_mod_v1 *(*)(void))dlsym(handle, "az_mod_v1_entry");
     if (!entry) {
         fail(K_INIT, "no az_mod_v1_entry");
         return 0;
     }
     mod = entry();
-    if (!mod || mod->abi != AZ_MOD_ABI || mod->size < (int)(offsetof(az_mod_v1, on_frame) + sizeof mod->on_frame) || !mod->init) {
+    if (!mod_descriptor_valid(mod)) {
         fail(K_INIT, "bad descriptor");
         return 0;
     }
@@ -1150,10 +1158,25 @@ static int load_mod(void)
         fail(K_INIT, "descriptor id is not %s", mod_id);
         return 0;
     }
-    if (!mod->fw_tags || !mod->fw_tags[0] || strcmp(mod->fw_tags[0], "any") != 0 || mod->fw_tags[1])
-        fail(K_INIT, "fw_tags is not { \"any\", NULL }");
+    if (!mod_tags_valid(mod)) fail(K_INIT, "fw_tags is not { \"any\", NULL }");
     Dl_info di;
     mod_base = dladdr((void *)entry, &di) ? di.dli_fbase : NULL;
+    return 1;
+}
+static int no_mod_registrations(void)
+{
+    return screens_registered == 0 && nsurf == 0 && nlisten == 0 && !ht_data_fn && !ht_command_fn && !hs_count();
+}
+static int check_mod_registrations(void)
+{
+    if (screens_registered > 1 || (screens_registered == 1 && !screen) || no_mod_registrations()) {
+        fail(K_INIT, "init registered %d screens, %d surfaces, %d deck-event listeners", screens_registered, nsurf, nlisten);
+        return 0;
+    }
+    return 1;
+}
+static int initialize_mod(void)
+{
     screen = NULL;
     screens_registered = 0;
     nsurf = nlisten = 0;
@@ -1167,13 +1190,18 @@ static int load_mod(void)
         fail(K_INIT, "init returned %d", rc);
         return 0;
     }
-    if (screens_registered > 1 || (screens_registered == 1 && !screen) ||
-        (screens_registered == 0 && nsurf == 0 && nlisten == 0 && !ht_data_fn && !ht_command_fn && !hs_count())) {
-        fail(K_INIT, "init registered %d screens, %d surfaces, %d deck-event listeners",
-             screens_registered, nsurf, nlisten);
+    return check_mod_registrations();
+}
+static int load_mod(void)
+{
+    reset_mod_services();
+    handle = dlopen(mod_path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        fail(K_INIT, "dlopen: %s", dlerror());
         return 0;
     }
-    return 1;
+    if (!load_descriptor()) return 0;
+    return initialize_mod();
 }
 
 static void call_tick(void)
@@ -1251,19 +1279,24 @@ static void call_draw(az_rect area, int row)
     cur_d = NULL;
 }
 
+static int point_in_rect(az_rect r, int x, int y)
+{
+    return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+}
+static int surface_target(int kind, int x, int y)
+{
+    for (int i = 0; i < nsurf; i++) {
+        int on = surface_visible(&surfs[i]);
+        if (kind == AZ_EV_TAP && on && point_in_rect(surfs[i].r, x, y)) return i;
+        if (kind != AZ_EV_TAP && focus_surf == i) return i;
+    }
+    return -1;
+}
 static int call_input(int kind, int dir, int x, int y)
 {
     if (!screen) {
-        /* no page: taps go to the surface under them, the knob, click and BACK to the focused one */
-        for (int i = 0; i < nsurf; i++) {
-            az_rect r = surfs[i].r;
-            int on = surface_visible(&surfs[i]);
-            if (kind == AZ_EV_TAP && on && x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h)
-                return surface_input(i, kind, dir, x, y);
-            if (kind != AZ_EV_TAP && focus_surf == i)
-                return surface_input(i, kind, dir, x, y);
-        }
-        return 0;
+        int target = surface_target(kind, x, y);
+        return target < 0 ? 0 : surface_input(target, kind, dir, x, y);
     }
     az_event ev = { kind, dir, x, y };
     ctx = CTX_INPUT;
@@ -1342,85 +1375,104 @@ struct soak {
     int bpm_drift;          /* nudge every loaded deck's BPM every tick (a moving pitch fader) */
 };
 
-static void soak(const struct soak *s, double max_rate)
+static int soak_load(int deck, int weird)
 {
-    unsigned long r0 = redraw_tick, l0 = log_lines;
-    int active = 1, away = 0;
-    call_enter();
-    for (int t = 0; t < s->ticks; t++) {
-        advance(TICK_NS);
-        if (t == s->ticks / 2) wall_ns += (s->weird ? -600 : 3600) * NS;    /* a clock step */
-        if (t % 300 == 150) D.count = s->weird && chance(2) ? (int)(rnd() % 9) - 1 : (D.count == 4 ? 2 : 4);
-        if (t % 200 == 100) theme = theme == 1 ? 2 + (int)(rnd() % 4) : 1;
-        int events[4] = { 0, 0, 0, 0 };
-        pthread_mutex_lock(&dmu);
-        if (t % 120 == 60) D.view = (int)(rnd() % 6);
-        for (int deck = 0; deck < 4; deck++) {
-            if (chance(90)) {
-                D.loaded[deck] = !D.loaded[deck];
-                D.playing[deck] = 0;
-                if (D.loaded[deck]) {
-                    random_title(deck, s->weird);
-                    snprintf(D.artist[deck], sizeof D.artist[deck], "%s", chance(2) ? "Artist" : "");
-                    D.bpm[deck] = random_bpm(s->weird);
-                    events[deck] = AZ_DECK_LOADED;
-                } else {
-                    D.title[deck][0] = '\0';
-                    D.artist[deck][0] = '\0';
-                    D.bpm[deck] = 0.0;
-                    events[deck] = AZ_DECK_EJECTED;
-                }
-            } else if (D.loaded[deck] && chance(60)) {
-                D.playing[deck] = !D.playing[deck];
-                events[deck] = D.playing[deck] ? AZ_DECK_PLAY : AZ_DECK_STOP;
-            }
-            if (D.loaded[deck] && s->bpm_drift) D.bpm[deck] += 0.013;
-            if (D.loaded[deck] && s->weird && chance(40)) D.bpm[deck] = random_bpm(1);
-            D.phase[deck] = D.loaded[deck] ? (t % 16) / 16.0 : -1.0;
-        }
-        pthread_mutex_unlock(&dmu);
-        for (int deck = 0; deck < 4; deck++)
-            if (events[deck]) {
-                hs_deck_changed((unsigned)deck, events[deck]);
-                fire(deck, events[deck]);
-            }
-        if (Q.open && chance(20)) answer(chance(2));
-
-        call_tick();
-
-        if (!screen) paint_surfaces(t % 15 == 0);
-        else if (active && (redraw_pending || t % 15 == 0)) call_draw(s->area, s->row);
-        if (!active && ++away > 30) {
-            active = 1;
-            away = 0;
-            call_enter();
-        }
-
-        if (active && s->inputs && chance(5)) {
-            int x = s->area.x - 50 + (int)(rnd() % (unsigned)(s->area.w + 100));
-            int y = s->area.y - 50 + (int)(rnd() % (unsigned)(s->area.h + 100));
-            unsigned k = rnd() % 20;
-            int r;
-            if (!screen && nsurf && chance(2)) {      /* aim at a surface, sometimes a long press */
-                az_rect sr = surfs[rnd() % (unsigned)nsurf].r;
-                x = sr.x + (int)(rnd() % (unsigned)(sr.w > 0 ? sr.w : 1));
-                y = sr.y + (int)(rnd() % (unsigned)(sr.h > 0 ? sr.h : 1));
-                if (chance(4)) {
-                    for (int i = 0; i < nsurf; i++)
-                        if (surfs[i].shown && x >= surfs[i].r.x && x < surfs[i].r.x + surfs[i].r.w &&
-                            y >= surfs[i].r.y && y < surfs[i].r.y + surfs[i].r.h)
-                            surface_input(i, AZ_EV_LONG, 0, x, y);
-                    continue;
-                }
-            }
-            if (k < 8) r = call_input(AZ_EV_KNOB, chance(2) ? -1 : 1, 0, 0);
-            else if (k < 11) r = call_input(AZ_EV_CLICK, 0, 0, 0);
-            else if (k < 17) r = call_input(AZ_EV_TAP, 0, x, y);
-            else if (k < 19) r = call_input(AZ_EV_BACK, 0, 0, 0);
-            else r = call_input(99, 7, x, y);
-            if (k >= 17 && k < 19 && r == 0) active = 0;    /* the core went back */
-        }
+    D.loaded[deck] = !D.loaded[deck];
+    D.playing[deck] = 0;
+    if (D.loaded[deck]) {
+        random_title(deck, weird);
+        snprintf(D.artist[deck], sizeof D.artist[deck], "%s", chance(2) ? "Artist" : "");
+        D.bpm[deck] = random_bpm(weird);
+        return AZ_DECK_LOADED;
     }
+    D.title[deck][0] = '\0';
+    D.artist[deck][0] = '\0';
+    D.bpm[deck] = 0.0;
+    return AZ_DECK_EJECTED;
+}
+static int soak_playback(int deck, int weird)
+{
+    if (chance(90)) return soak_load(deck, weird);
+    if (D.loaded[deck] && chance(60)) {
+        D.playing[deck] = !D.playing[deck];
+        return D.playing[deck] ? AZ_DECK_PLAY : AZ_DECK_STOP;
+    }
+    return 0;
+}
+static void soak_deck_clock(const struct soak *s, int deck, int t)
+{
+    if (D.loaded[deck] && s->bpm_drift) D.bpm[deck] += 0.013;
+    if (D.loaded[deck] && s->weird && chance(40)) D.bpm[deck] = random_bpm(1);
+    D.phase[deck] = D.loaded[deck] ? (t % 16) / 16.0 : -1.0;
+}
+static void soak_decks(const struct soak *s, int t)
+{
+    int events[4] = { 0 };
+    pthread_mutex_lock(&dmu);
+    if (t % 120 == 60) D.view = (int)(rnd() % 6);
+    for (int deck = 0; deck < 4; deck++) {
+        events[deck] = soak_playback(deck, s->weird);
+        soak_deck_clock(s, deck, t);
+    }
+    pthread_mutex_unlock(&dmu);
+    for (int deck = 0; deck < 4; deck++)
+        if (events[deck]) {
+            hs_deck_changed((unsigned)deck, events[deck]);
+            fire(deck, events[deck]);
+        }
+}
+static void soak_environment(const struct soak *s, int t)
+{
+    advance(TICK_NS);
+    if (t == s->ticks / 2) wall_ns += (s->weird ? -600 : 3600) * NS;
+    if (t % 300 == 150) D.count = s->weird && chance(2) ? (int)(rnd() % 9) - 1 : (D.count == 4 ? 2 : 4);
+    if (t % 200 == 100) theme = theme == 1 ? 2 + (int)(rnd() % 4) : 1;
+}
+static void soak_long_press(int x, int y)
+{
+    for (int i = 0; i < nsurf; i++)
+        if (surfs[i].shown && point_in_rect(surfs[i].r, x, y)) surface_input(i, AZ_EV_LONG, 0, x, y);
+}
+static int soak_surface_press(int *x, int *y)
+{
+    if (screen || !nsurf || !chance(2)) return 0;
+    az_rect sr = surfs[rnd() % (unsigned)nsurf].r;
+    *x = sr.x + (int)(rnd() % (unsigned)(sr.w > 0 ? sr.w : 1));
+    *y = sr.y + (int)(rnd() % (unsigned)(sr.h > 0 ? sr.h : 1));
+    if (!chance(4)) return 0;
+    soak_long_press(*x, *y);
+    return 1;
+}
+static int soak_input_kind(unsigned k, int x, int y)
+{
+    if (k < 8) return call_input(AZ_EV_KNOB, chance(2) ? -1 : 1, 0, 0);
+    if (k < 11) return call_input(AZ_EV_CLICK, 0, 0, 0);
+    if (k < 17) return call_input(AZ_EV_TAP, 0, x, y);
+    if (k < 19) return call_input(AZ_EV_BACK, 0, 0, 0);
+    return call_input(99, 7, x, y);
+}
+static void soak_input(const struct soak *s, int *active)
+{
+    if (!*active || !s->inputs || !chance(5)) return;
+    int x = s->area.x - 50 + (int)(rnd() % (unsigned)(s->area.w + 100));
+    int y = s->area.y - 50 + (int)(rnd() % (unsigned)(s->area.h + 100));
+    unsigned k = rnd() % 20;
+    if (soak_surface_press(&x, &y)) return;
+    int r = soak_input_kind(k, x, y);
+    if (k >= 17 && k < 19 && r == 0) *active = 0;
+}
+static void soak_paint(const struct soak *s, int t, int *active, int *away)
+{
+    if (!screen) paint_surfaces(t % 15 == 0);
+    else if (*active && (redraw_pending || t % 15 == 0)) call_draw(s->area, s->row);
+    if (!*active && ++*away > 30) {
+        *active = 1;
+        *away = 0;
+        call_enter();
+    }
+}
+static void soak_report(const struct soak *s, double max_rate, unsigned long r0, unsigned long l0)
+{
     double secs = s->ticks * (double)TICK_NS / NS;
     unsigned long redraws = redraw_tick - r0, logs = log_lines - l0;
     double limit = max_rate * secs + secs / 60.0 + 3.0;
@@ -1428,6 +1480,21 @@ static void soak(const struct soak *s, double max_rate)
         fail(K_REDRAW, "%s: %lu redraws from tick in %.0f s (limit %.0f)", s->name, redraws, secs, limit);
     if (logs > 30) fail(K_LOG, "%s: %lu log lines in %d ticks (last: %s)", s->name, logs, s->ticks, last_log);
     printf("  soak %-10s %4d ticks  %4lu redraws from tick  %3lu log lines\n", s->name, s->ticks, redraws, logs);
+}
+static void soak(const struct soak *s, double max_rate)
+{
+    unsigned long r0 = redraw_tick, l0 = log_lines;
+    int active = 1, away = 0;
+    call_enter();
+    for (int t = 0; t < s->ticks; t++) {
+        soak_environment(s, t);
+        soak_decks(s, t);
+        if (Q.open && chance(20)) answer(chance(2));
+        call_tick();
+        soak_paint(s, t, &active, &away);
+        soak_input(s, &active);
+    }
+    soak_report(s, max_rate, r0, l0);
 }
 
 /* ---- for a mod's functional scenarios ----------------------------------------------------- */
@@ -1490,7 +1557,31 @@ static int harness_scenarios(const char *id)
 
 /* ---- main --------------------------------------------------------------------------------- */
 
-static int run(double max_rate, int functional)
+static void report_io_counts(void)
+{
+    if (azt_counts) {
+        unsigned long io, alloc;
+        const char *io_name, *alloc_name;
+        azt_counts(&io, &alloc, &io_name, &alloc_name);
+        if (io) fail(K_IO, "%lu calls, the first %s()", io, io_name);
+        if (alloc) fail(K_ALLOC, "%lu calls, the first %s()", alloc, alloc_name);
+    }
+}
+static int harness_report(void)
+{
+    report_io_counts();
+    int ok = 1;
+    for (int k = 0; k < NK; k++) {
+        if (!kmeasured[k]) {
+            printf("CHECK %s NOT-MEASURED\n", KNAME[k]);
+            continue;
+        }
+        printf("CHECK %s %s %s\n", KNAME[k], kfails[k] ? "FAIL" : "PASS", kfails[k] ? kfirst[k] : "");
+        if (kfails[k]) ok = 0;
+    }
+    return ok ? 0 : 1;
+}
+static void measure_checks(int functional)
 {
     azt_arm = (void (*)(int))dlsym(RTLD_DEFAULT, "azt_arm");
     azt_counts = (void (*)(unsigned long *, unsigned long *, const char **, const char **))
@@ -1499,6 +1590,10 @@ static int run(double max_rate, int functional)
     for (int k = 0; k < NK; k++)
         if (k != K_IO && k != K_ALLOC) kmeasured[k] = 1;
     kmeasured[K_FUNC] = functional;
+}
+static int run(double max_rate, int functional)
+{
+    measure_checks(functional);
 
     static const struct soak SOAKS[] = {
         { "full", { 0, 0, 1280, 800 }, 60, 1000, 1, 0, 0 },
@@ -1525,23 +1620,7 @@ static int run(double max_rate, int functional)
     }
 
 report:
-    if (azt_counts) {
-        unsigned long io, alloc;
-        const char *io_name, *alloc_name;
-        azt_counts(&io, &alloc, &io_name, &alloc_name);
-        if (io) fail(K_IO, "%lu calls, the first %s()", io, io_name);
-        if (alloc) fail(K_ALLOC, "%lu calls, the first %s()", alloc, alloc_name);
-    }
-    int ok = 1;
-    for (int k = 0; k < NK; k++) {
-        if (!kmeasured[k]) {
-            printf("CHECK %s NOT-MEASURED\n", KNAME[k]);
-            continue;
-        }
-        printf("CHECK %s %s %s\n", KNAME[k], kfails[k] ? "FAIL" : "PASS", kfails[k] ? kfirst[k] : "");
-        if (kfails[k]) ok = 0;
-    }
-    return ok ? 0 : 1;
+    return harness_report();
 }
 
 int main(int argc, char **argv)

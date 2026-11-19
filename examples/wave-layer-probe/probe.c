@@ -128,12 +128,9 @@ static void release_ticket(struct probe *p, uint64_t *ticket)
         *ticket = 0;
     } else stop(p, "INCOMPLETE", "release");
 }
-static int get_wave(struct probe *p, const az_track_ref *ref, const az_wave_query *q,
-                    uint64_t *ticket, const az_wave_snapshot **view)
+static int request_wave(struct probe *p, const az_track_ref *ref, const az_wave_query *q, uint64_t *ticket)
 {
     int rc = AZ_BUSY;
-    *ticket = 0;
-    *view = NULL;
     for (unsigned i = 0; i < PROBE_POLLS; ++i) {
         if (!allow(p)) return PROBE_STOP;
         rc = p->library->waveform_request(ID, ref, q, ticket);
@@ -145,6 +142,45 @@ static int get_wave(struct probe *p, const az_track_ref *ref, const az_wave_quer
         }
         if (i + 1 < PROBE_POLLS && !pause_probe(p)) return PROBE_STOP;
     }
+    return rc;
+}
+static int acquire_wave(struct probe *p, uint64_t ticket, const az_wave_snapshot **view)
+{
+    int rc = AZ_PENDING;
+    /* Pending work has no24-poll delivery guarantee. The overall call and
+     * deadline bounds still apply while the core worker owns the job. */
+    for (unsigned i = 0; i < PROBE_CALLS; ++i) {
+        if (!allow(p)) return PROBE_STOP;
+        *view = NULL;
+        rc = p->library->waveform_acquire(ID, ticket, view);
+        if (rc != AZ_PENDING && rc != AZ_BUSY) break;
+        if (*view) {
+            stop(p, "FAIL", "pending_view");
+            return PROBE_STOP;
+        }
+        if (i + 1 < PROBE_CALLS && !pause_probe(p)) return PROBE_STOP;
+    }
+    return rc;
+}
+static int wave_result(struct probe *p, int rc, const az_wave_snapshot *view)
+{
+    if (rc == AZ_BUSY || rc == AZ_PENDING) {
+        stop(p, "INCOMPLETE", "timeout");
+        return PROBE_STOP;
+    }
+    if (rc != AZ_OK && view) {
+        stop(p, "FAIL", "error_view");
+        return PROBE_STOP;
+    }
+    return rc;
+}
+static int get_wave(struct probe *p, const az_track_ref *ref, const az_wave_query *q,
+                    uint64_t *ticket, const az_wave_snapshot **view)
+{
+    *ticket = 0;
+    *view = NULL;
+    int rc = request_wave(p, ref, q, ticket);
+    if (rc == PROBE_STOP) return rc;
     if (rc == AZ_OK) {
         if (!*ticket) {
             stop(p, "FAIL", "zero_ticket");
@@ -152,19 +188,8 @@ static int get_wave(struct probe *p, const az_track_ref *ref, const az_wave_quer
         }
         p->requests++;
         p->owned++;
-        /* Pending work has no24-poll delivery guarantee. Keep the existing
-         * overall call/deadline bounds while the core worker owns the job. */
-        for (unsigned i = 0; i < PROBE_CALLS; ++i) {
-            if (!allow(p)) return PROBE_STOP;
-            *view = NULL;
-            rc = p->library->waveform_acquire(ID, *ticket, view);
-            if (rc != AZ_PENDING && rc != AZ_BUSY) break;
-            if (*view) {
-                stop(p, "FAIL", "pending_view");
-                return PROBE_STOP;
-            }
-            if (i + 1 < PROBE_CALLS && !pause_probe(p)) return PROBE_STOP;
-        }
+        rc = acquire_wave(p, *ticket, view);
+        if (rc == PROBE_STOP) return rc;
     } else if (*ticket) {
         *ticket = 0;
         stop(p, "FAIL", "error_ticket");
@@ -174,75 +199,91 @@ static int get_wave(struct probe *p, const az_track_ref *ref, const az_wave_quer
                (unsigned long long)p->query_ns, (unsigned long long)*ticket, q->encoding, q->first_column, q->column_count, rc,
                (unsigned long long)ref->source_id, (unsigned long long)ref->source_generation,
                (unsigned long long)ref->library_id, ref->track_id);
-    if (rc == AZ_BUSY || rc == AZ_PENDING) {
-        stop(p, "INCOMPLETE", "timeout");
-        return PROBE_STOP;
-    }
-    if (rc != AZ_OK && *view) {
-        stop(p, "FAIL", "error_view");
-        return PROBE_STOP;
-    }
-    return rc;
+    return wave_result(p, rc, *view);
+}
+
+static int wave_header_valid(const az_track_ref *ref, const az_wave_query *q, const az_wave_snapshot *v, uint32_t total)
+{
+    if (!v || v->size < sizeof *v || v->version != AZ_DATA_VERSION || !same_ref(&v->track, ref)) return 0;
+    return v->total_columns && (!total || v->total_columns == total) && q->first_column < v->total_columns;
+}
+static int wave_dimensions_valid(const az_wave_query *q, const az_wave_snapshot *v, unsigned stride)
+{
+    uint32_t count = v->total_columns - q->first_column;
+    if (count > q->column_count) count = q->column_count;
+    return v->encoding == q->encoding && v->first_column == q->first_column && v->column_count == count &&
+           count <= PROBE_COLUMNS && v->bytes_per_column == stride && v->data_bytes == count * stride && v->columns;
+}
+static int wave_provenance_valid(const az_wave_snapshot *v, unsigned stride)
+{
+    if (v->info.availability != AZ_AVAIL_READY ||
+        v->info.provenance != (stride == 3 ? AZ_PROV_FILE : AZ_PROV_DERIVED) ||
+        !v->revision || !v->observed_ns || v->reserved[0] || v->reserved[1]) return 0;
+    return 1;
+}
+static int wave_clock_valid(const az_wave_query *q, const az_wave_snapshot *v)
+{
+    /* Check the complete extent: a one-column window cannot hide a bad scale. */
+    const int start = compare_timestamps(v->start_s, q->first_column / 150.0, 1, 150, 1);
+    const int extent = compare_timestamps(v->seconds_per_column * v->total_columns,
+                                          v->total_columns / 150.0, 1, 150, 1);
+    return start != AZ_TIME_INVALID && start == AZ_TIME_EQUAL &&
+           extent != AZ_TIME_INVALID && extent == AZ_TIME_EQUAL;
 }
 static int geometry(struct probe *p, const az_track_ref *ref, const az_wave_query *q,
                     const az_wave_snapshot *v, uint32_t total)
 {
-    if (!v || v->size < sizeof *v || v->version != AZ_DATA_VERSION || !same_ref(&v->track, ref)) goto bad;
-    if (!v->total_columns || (total && v->total_columns != total) || q->first_column >= v->total_columns) goto bad;
-    uint32_t count = v->total_columns - q->first_column;
-    if (count > q->column_count) count = q->column_count;
     unsigned stride = q->encoding == AZ_WAVE_PWV7_BANDS ? 3u : 6u;
-    /* PWV7's source clock is 150 columns/second. Check the complete extent,
-     * so a one-column window does not conceal an invalid per-column scale. */
-    const int start = compare_timestamps(v->start_s, q->first_column / 150.0, 1, 150, 1);
-    const int extent = compare_timestamps(v->seconds_per_column * v->total_columns,
-                                          v->total_columns / 150.0, 1, 150, 1);
-    if (v->encoding != q->encoding || v->first_column != q->first_column || v->column_count != count ||
-        count > PROBE_COLUMNS || v->bytes_per_column != stride || v->data_bytes != count * stride || !v->columns ||
-        v->info.availability != AZ_AVAIL_READY ||
-        v->info.provenance != (stride == 3 ? AZ_PROV_FILE : AZ_PROV_DERIVED) ||
-        !v->revision || !v->observed_ns || v->reserved[0] || v->reserved[1] ||
-        start == AZ_TIME_INVALID || start != AZ_TIME_EQUAL ||
-        extent == AZ_TIME_INVALID || extent != AZ_TIME_EQUAL) goto bad;
-    return 1;
-bad:
+    if (wave_header_valid(ref, q, v, total) && wave_dimensions_valid(q, v, stride) &&
+        wave_provenance_valid(v, stride) && wave_clock_valid(q, v)) return 1;
     stop(p, "FAIL", "geometry_ref_provenance");
     return 0;
 }
+
 /* Inverse contract: reconstruct each input byte from layer membership. No
  * sorting, encoder invocation or forward conversion is used as an oracle. */
+struct inverse_layers {
+    unsigned mask, level;
+    uint8_t recovered[3];
+};
+static void inverse_recover(struct inverse_layers *s, unsigned mask, unsigned level)
+{
+    for (unsigned channel = 0; channel < 3; ++channel)
+        if ((mask & (1u << channel)) && !s->recovered[channel]) s->recovered[channel] = (uint8_t)level;
+}
+static int inverse_layer(struct inverse_layers *s, unsigned id, unsigned level)
+{
+    static const unsigned masks[] = { 0, 4, 2, 1, 6, 5, 3, 0, 7 };
+    unsigned mask = id < sizeof masks / sizeof *masks ? masks[id] : 0;
+    if (!mask || !level || level >= s->level || mask == s->mask || (mask & s->mask) != s->mask) return 0;
+    inverse_recover(s, mask, level);
+    s->mask = mask;
+    s->level = level;
+    return 1;
+}
+static int inverse_column(struct inverse_layers *s, const uint8_t layered[6], unsigned header, unsigned i)
+{
+    unsigned id = (header >> (4 * i)) & 15, level = layered[2 + i];
+    if (i >= (header >> 12)) return !id && !level;
+    return inverse_layer(s, id, level);
+}
+static int inverse_silence(unsigned header, const uint8_t layered[6])
+{
+    return header == 0x1008 && !layered[2] && !layered[3] && !layered[4];
+}
 static int inverse(const uint8_t raw[3], const uint8_t layered[6])
 {
     unsigned header = layered[0] | (unsigned)layered[1] << 8;
-    unsigned count = header >> 12, previous_mask = 0, previous_level = 256;
-    uint8_t recovered[3] = { 0 };
+    unsigned count = header >> 12;
+    struct inverse_layers state = { .level = 256 };
     if (count < 1 || count > 3 || layered[5] != 0) return 0;
-    if (!raw[0] && !raw[1] && !raw[2])
-        return header == 0x1008 && !layered[2] && !layered[3] && !layered[4];
-    for (unsigned i = 0; i < 3; ++i) {
-        unsigned id = (header >> (4 * i)) & 15, level = layered[2 + i], mask;
-        if (i >= count) {
-            if (id || level) return 0;
-            continue;
-        }
-        switch (id) {
-        case 1: mask = 4; break;
-        case 2: mask = 2; break;
-        case 3: mask = 1; break;
-        case 4: mask = 6; break;
-        case 5: mask = 5; break;
-        case 6: mask = 3; break;
-        case 8: mask = 7; break;
-        default: return 0;
-        }
-        if (!level || level >= previous_level || mask == previous_mask || (mask & previous_mask) != previous_mask) return 0;
-        for (unsigned channel = 0; channel < 3; ++channel)
-            if ((mask & (1u << channel)) && !recovered[channel]) recovered[channel] = (uint8_t)level;
-        previous_mask = mask;
-        previous_level = level;
-    }
+    if (!raw[0] && !raw[1] && !raw[2]) return inverse_silence(header, layered);
+    for (unsigned i = 0; i < 3; ++i)
+        if (!inverse_column(&state, layered, header, i)) return 0;
+    const uint8_t *recovered = state.recovered;
     return !memcmp(recovered, raw, 3);
 }
+
 static uint64_t hash_bytes(const uint8_t *data, uint32_t count)
 {
     uint64_t hash = UINT64_C(14695981039346656037);
@@ -271,6 +312,15 @@ static void view_log(struct probe *p, uint64_t ticket, const az_wave_snapshot *v
                (unsigned long long)v->track.source_id, (unsigned long long)v->track.source_generation,
                (unsigned long long)v->track.library_id, v->track.track_id, v->start_s, v->seconds_per_column);
 }
+static int payload_matches(struct probe *p, const az_wave_snapshot *raw, const az_wave_snapshot *layer)
+{
+    for (uint32_t i = 0; i < raw->column_count; ++i)
+        if (!inverse(raw->columns + i * 3, layer->columns + i * 6)) {
+            stop(p, "FAIL", "payload_inverse");
+            return 0;
+        }
+    return 1;
+}
 static int pair(struct probe *p, const az_track_ref *ref, uint32_t total, uint32_t first, uint32_t requested)
 {
     uint64_t raw_ticket = 0, layer_ticket = 0;
@@ -291,11 +341,7 @@ static int pair(struct probe *p, const az_track_ref *ref, uint32_t total, uint32
         goto done;
     }
     if (!geometry(p, ref, &q, layer, total)) goto done;
-    for (uint32_t i = 0; i < raw->column_count; ++i)
-        if (!inverse(raw->columns + i * 3, layer->columns + i * 6)) {
-            stop(p, "FAIL", "payload_inverse");
-            goto done;
-        }
+    if (!payload_matches(p, raw, layer)) goto done;
     view_log(p, raw_ticket, raw);
     view_log(p, layer_ticket, layer);
     char raw_hex[PROBE_SAMPLE_BYTES * 2 + 1], layer_hex[PROBE_SAMPLE_BYTES * 2 + 1];
@@ -320,80 +366,113 @@ static int refusal(struct probe *p, const az_track_ref *ref, uint32_t encoding, 
     release_ticket(p, &ticket);
     return rc == expected && !strcmp(p->status, "PASS");
 }
+static int wave_service(struct probe *p)
+{
+    p->library = probe_core->library_service(AZ_LIBRARY_ABI);
+    if (AZ_LIB_HAS(p->library, lib_tracks) && AZ_LIB_HAS(p->library, track_resolve) &&
+        AZ_LIB_HAS(p->library, waveform_request) && AZ_LIB_HAS(p->library, waveform_acquire) && AZ_LIB_HAS(p->library, track_release)) return 1;
+    stop(p, "INCOMPLETE", "service");
+    return 0;
+}
+static int resolve_track(struct probe *p, uint32_t selected, az_track_ref *ref)
+{
+    int rc = AZ_BUSY;
+    for (unsigned i = 0; i < PROBE_POLLS; ++i) {
+        if (!allow(p)) return 0;
+        *ref = (az_track_ref){ .size = sizeof *ref };
+        rc = p->library->track_resolve(ID, PROBE_SOURCE_PORT, selected, ref);
+        if (rc != AZ_BUSY) break;
+        if (i + 1 < PROBE_POLLS && !pause_probe(p)) return 0;
+    }
+    if (rc == AZ_OK) return 1;
+    stop(p, "INCOMPLETE", "resolve");
+    return 0;
+}
+static int resolved_track_valid(const az_track_ref *ref, uint32_t selected)
+{
+    return ref->version == AZ_DATA_VERSION && ref->size >= sizeof *ref && ref->source_id &&
+           ref->source_generation && ref->library_id && ref->track_id == selected && !ref->reserved;
+}
+static int select_track(struct probe *p, az_track_ref *ref)
+{
+    uint32_t selected = 0;
+    if (!allow(p)) return 0;
+    int rc = p->library->lib_tracks(ID, PROBE_SOURCE_PORT, 0, choose, &selected);
+    if (rc < 0 || !selected) {
+        stop(p, "INCOMPLETE", "first_public_track");
+        return 0;
+    }
+    if (!resolve_track(p, selected, ref)) return 0;
+    if (!resolved_track_valid(ref, selected)) {
+        stop(p, "FAIL", "resolved_ref");
+        return 0;
+    }
+    return emit(p, "resolve", "source=%llu generation=%llu library=%llu track=%u",
+                (unsigned long long)ref->source_id, (unsigned long long)ref->source_generation,
+                (unsigned long long)ref->library_id, ref->track_id);
+}
+static int empty_waveform(const az_wave_snapshot *view)
+{
+    return view && view->size >= sizeof *view && (!view->total_columns || view->info.availability == AZ_AVAIL_EMPTY);
+}
+static int initial_wave(struct probe *p, const az_track_ref *ref, uint64_t *ticket, uint32_t *total)
+{
+    const az_wave_snapshot *view = NULL;
+    az_wave_query initial = { sizeof initial, AZ_DATA_VERSION, AZ_WAVE_PWV7_BANDS, 0, 1, 0 };
+    int rc = get_wave(p, ref, &initial, ticket, &view);
+    if (rc == PROBE_STOP) return 0;
+    if (rc != AZ_OK) {
+        stop(p, "INCOMPLETE", "initial_raw");
+        return 0;
+    }
+    if (empty_waveform(view)) {
+        stop(p, "INCOMPLETE", "empty_waveform");
+        return 0;
+    }
+    if (!geometry(p, ref, &initial, view, 0)) return 0;
+    *total = view->total_columns;
+    view_log(p, *ticket, view);
+    release_ticket(p, ticket);
+    return !strcmp(p->status, "PASS");
+}
+static void verify_windows(struct probe *p, const az_track_ref *ref, uint32_t total)
+{
+    if (!pair(p, ref, total, total / 2, PROBE_COLUMNS) || !pair(p, ref, total, total - 1, AZ_WAVE_WINDOW_MAX)) return;
+    const uint32_t formats[] = { AZ_WAVE_PWV7_BANDS, AZ_WAVE_PWV7_LAYERED_RAW };
+    for (unsigned i = 0; i < sizeof formats / sizeof formats[0]; ++i) {
+        uint32_t encoding = formats[i];
+        if (!refusal(p, ref, encoding, 0, 0, AZ_INVALID) ||
+            !refusal(p, ref, encoding, 0, AZ_WAVE_WINDOW_MAX + 1, AZ_LIMIT) ||
+            !refusal(p, ref, encoding, total, 1, AZ_INVALID)) return;
+    }
+    (void)refusal(p, ref, 99, 0, 1, AZ_UNSUPPORTED);
+}
+static void probe_run(struct probe *p, uint64_t *ticket)
+{
+    az_track_ref ref = { .size = sizeof ref };
+    uint32_t total = 0;
+    p->started = p->query_ns = probe_now();
+    if (!p->started) {
+        stop(p, "INCOMPLETE", "clock");
+        return;
+    }
+    if (!wave_service(p)) return;
+    if (!emit(p, "start", "window=%u max_polls=%u max_calls=%u deadline_ns=%llu", PROBE_COLUMNS, PROBE_CALLS, PROBE_CALLS, (unsigned long long)PROBE_DEADLINE_NS)) return;
+    if (!select_track(p, &ref) || !initial_wave(p, &ref, ticket, &total)) return;
+    verify_windows(p, &ref, total);
+}
 static void *probe_worker(void *unused)
 {
     (void)unused;
     struct probe p = { .status = "PASS", .reason = "verified" };
     uint64_t ticket = 0;
-    const az_wave_snapshot *view = NULL;
-    az_track_ref ref = { .size = sizeof ref };
-    uint32_t selected = 0, total = 0;
-    p.started = p.query_ns = probe_now();
-    if (!p.started) {
-        stop(&p, "INCOMPLETE", "clock");
-        goto done;
-    }
-    p.library = probe_core->library_service(AZ_LIBRARY_ABI);
-    if (!AZ_LIB_HAS(p.library, lib_tracks) || !AZ_LIB_HAS(p.library, track_resolve) ||
-        !AZ_LIB_HAS(p.library, waveform_request) || !AZ_LIB_HAS(p.library, waveform_acquire) || !AZ_LIB_HAS(p.library, track_release)) {
-        stop(&p, "INCOMPLETE", "service");
-        goto done;
-    }
-    if (!emit(&p, "start", "window=%u max_polls=%u max_calls=%u deadline_ns=%llu", PROBE_COLUMNS, PROBE_CALLS, PROBE_CALLS, (unsigned long long)PROBE_DEADLINE_NS)) goto done;
-    if (!allow(&p)) goto done;
-    int rc = p.library->lib_tracks(ID, PROBE_SOURCE_PORT, 0, choose, &selected);
-    if (rc < 0 || !selected) {
-        stop(&p, "INCOMPLETE", "first_public_track");
-        goto done;
-    }
-    for (unsigned i = 0; i < PROBE_POLLS; ++i) {
-        if (!allow(&p)) goto done;
-        ref = (az_track_ref){ .size = sizeof ref };
-        rc = p.library->track_resolve(ID, PROBE_SOURCE_PORT, selected, &ref);
-        if (rc != AZ_BUSY) break;
-        if (i + 1 < PROBE_POLLS && !pause_probe(&p)) goto done;
-    }
-    if (rc != AZ_OK) {
-        stop(&p, "INCOMPLETE", "resolve");
-        goto done;
-    }
-    if (ref.version != AZ_DATA_VERSION || ref.size < sizeof ref || !ref.source_id || !ref.source_generation || !ref.library_id || ref.track_id != selected || ref.reserved) {
-        stop(&p, "FAIL", "resolved_ref");
-        goto done;
-    }
-    if (!emit(&p, "resolve", "source=%llu generation=%llu library=%llu track=%u",
-              (unsigned long long)ref.source_id, (unsigned long long)ref.source_generation, (unsigned long long)ref.library_id, ref.track_id)) goto done;
-    az_wave_query initial = { sizeof initial, AZ_DATA_VERSION, AZ_WAVE_PWV7_BANDS, 0, 1, 0 };
-    rc = get_wave(&p, &ref, &initial, &ticket, &view);
-    if (rc == PROBE_STOP) goto done;
-    if (rc != AZ_OK) {
-        stop(&p, "INCOMPLETE", "initial_raw");
-        goto done;
-    }
-    if (view && view->size >= sizeof *view && (!view->total_columns || view->info.availability == AZ_AVAIL_EMPTY)) {
-        stop(&p, "INCOMPLETE", "empty_waveform");
-        goto done;
-    }
-    if (!geometry(&p, &ref, &initial, view, 0)) goto done;
-    total = view->total_columns;
-    view_log(&p, ticket, view);
-    release_ticket(&p, &ticket);
-    if (strcmp(p.status, "PASS")) goto done;
-    if (!pair(&p, &ref, total, total / 2, PROBE_COLUMNS) || !pair(&p, &ref, total, total - 1, AZ_WAVE_WINDOW_MAX)) goto done;
-    const uint32_t formats[] = { AZ_WAVE_PWV7_BANDS, AZ_WAVE_PWV7_LAYERED_RAW };
-    for (unsigned i = 0; i < sizeof formats / sizeof formats[0]; ++i) {
-        uint32_t encoding = formats[i];
-        if (!refusal(&p, &ref, encoding, 0, 0, AZ_INVALID) ||
-            !refusal(&p, &ref, encoding, 0, AZ_WAVE_WINDOW_MAX + 1, AZ_LIMIT) ||
-            !refusal(&p, &ref, encoding, total, 1, AZ_INVALID)) goto done;
-    }
-    (void)refusal(&p, &ref, 99, 0, 1, AZ_UNSUPPORTED);
-done:
+    probe_run(&p, &ticket);
     if (p.library && ticket) release_ticket(&p, &ticket);
     probe_core->log(ID, "SDK_PUBLIC_WAVE v=1 seq=%u port=%d event=final status=%s reason=%s calls=%u accepted=%u released=%u outstanding=%u",
                     p.lines + 1, PROBE_SOURCE_PORT, p.status, p.reason, p.calls, p.requests, p.releases, p.owned);
     return NULL;
 }
+
 static int init(const az_core_v1 *core)
 {
     if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, log) || !AZ_HAS(core, thread_start) || !AZ_HAS(core, library_service)) return -1;

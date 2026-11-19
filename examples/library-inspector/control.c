@@ -41,30 +41,44 @@ static int same_result(const az_command_result *a, const az_command_result *b)
     return a->request_id == b->request_id && a->outcome == b->outcome && a->reason == b->reason &&
            a->revision == b->revision && observed == AZ_TIME_EQUAL;
 }
+static int completion_outcome_valid(const az_command_completion *c)
+{
+    return c->result.outcome != AZ_COMMAND_ACCEPTED &&
+           (c->result.outcome == AZ_COMMAND_UNCERTAIN || c->settled) &&
+           (c->result.outcome != AZ_COMMAND_APPLIED ||
+            (c->result.reason == AZ_OK && c->result.revision && c->result.observed_ns));
+}
+static int completion_valid(const az_command_completion *c, void *user)
+{
+    return user == &command && az_data_covers(c, sizeof *c) && c->version == AZ_DATA_VERSION &&
+           c->settled <= 1 && az_command_result_matches(&c->result, command.id) && completion_outcome_valid(c);
+}
+static void terminal_received(const az_command_completion *c)
+{
+    command.terminal = c->result;
+    command.terminal_seen = 1;
+    snprintf(lines[3], sizeof lines[3], "Request %llu: outcome %u, reason %d",
+             (unsigned long long)command.id, c->result.outcome, c->result.reason);
+    int rc = library->command_acknowledge(ID, command.id);
+    if (rc == AZ_OK) {
+        command.phase = WAIT_RELEASED;
+        snprintf(lines[5], sizeof lines[5], "%s", c->settled ? "Acknowledged; cleanup pending" : "Acknowledged; native settlement and cleanup pending");
+    } else {
+        protocol_error = 1;
+        snprintf(lines[5], sizeof lines[5], "Acknowledgement failed: %d; context retained", rc);
+    }
+}
+static int release_matches(const az_command_completion *c)
+{
+    return c->kind == AZ_COMMAND_COMPLETION_RELEASED && command.phase == WAIT_RELEASED &&
+           c->settled == 1 && command.terminal_seen && same_result(&c->result, &command.terminal);
+}
 static void complete(const az_command_completion *c, void *user)
 {
-    if (user != &command || !az_data_covers(c, sizeof *c) || c->version != AZ_DATA_VERSION ||
-        c->settled > 1 || !az_command_result_matches(&c->result, command.id) ||
-        c->result.outcome == AZ_COMMAND_ACCEPTED ||
-        (c->result.outcome != AZ_COMMAND_UNCERTAIN && !c->settled) ||
-        (c->result.outcome == AZ_COMMAND_APPLIED &&
-         (c->result.reason != AZ_OK || !c->result.revision || !c->result.observed_ns))) {
-        protocol_error = 1;
-    } else if (c->kind == AZ_COMMAND_COMPLETION_TERMINAL && command.phase == WAIT_TERMINAL && !command.terminal_seen) {
-        command.terminal = c->result;
-        command.terminal_seen = 1;
-        snprintf(lines[3], sizeof lines[3], "Request %llu: outcome %u, reason %d",
-                 (unsigned long long)command.id, c->result.outcome, c->result.reason);
-        int rc = library->command_acknowledge(ID, command.id);
-        if (rc == AZ_OK) {
-            command.phase = WAIT_RELEASED;
-            snprintf(lines[5], sizeof lines[5], "%s", c->settled ? "Acknowledged; cleanup pending" : "Acknowledged; native settlement and cleanup pending");
-        } else {
-            protocol_error = 1;
-            snprintf(lines[5], sizeof lines[5], "Acknowledgement failed: %d; context retained", rc);
-        }
-    } else if (c->kind == AZ_COMMAND_COMPLETION_RELEASED && command.phase == WAIT_RELEASED &&
-               c->settled == 1 && command.terminal_seen && same_result(&c->result, &command.terminal)) {
+    if (!completion_valid(c, user)) protocol_error = 1;
+    else if (c->kind == AZ_COMMAND_COMPLETION_TERMINAL && command.phase == WAIT_TERMINAL && !command.terminal_seen)
+        terminal_received(c);
+    else if (release_matches(c)) {
         command.id = 0;
         command.phase = IDLE;
         command.terminal_seen = 0;
@@ -73,36 +87,26 @@ static void complete(const az_command_completion *c, void *user)
     if (protocol_error) snprintf(lines[6], sizeof lines[6], "Command protocol error; unvalidated state retained");
     core->request_redraw();
 }
+static int exit_available(void)
+{
+    az_data_capabilities caps = { .size = sizeof caps };
+    return supported() && library->data_capabilities(&caps) == AZ_OK &&
+           caps.version == AZ_DATA_VERSION && (caps.commands & (UINT64_C(1) << AZ_CMD_LOOP_EXIT));
+}
+
 static void tick(void)
 {
     if (!core) return;
-    az_data_capabilities caps = { .size = sizeof caps };
-    int available = supported() && library->data_capabilities(&caps) == AZ_OK &&
-                    caps.version == AZ_DATA_VERSION && (caps.commands & (UINT64_C(1) << AZ_CMD_LOOP_EXIT));
+    int available = exit_available();
     snprintf(lines[1], sizeof lines[1], "Loop EXIT capability: %s", available ? "available" : "unavailable");
     if (attempted) snprintf(lines[2], sizeof lines[2], "Last attempt status %d", status);
     else snprintf(lines[2], sizeof lines[2], "No command submitted");
 }
-static int input(const az_event *event, void *user)
+static int command_clock(uint64_t *ns)
 {
-    (void)user;
-    if (event->kind != AZ_EV_CLICK) return 0;
-    if (command.phase != IDLE) return 1;
-    attempted = 1;
-    lines[3][0] = lines[5][0] = lines[6][0] = 0;
-    protocol_error = 0;
-    az_data_capabilities caps = { .size = sizeof caps };
-    if (!supported() || library->data_capabilities(&caps) != AZ_OK || caps.version != AZ_DATA_VERSION ||
-        !(caps.commands & (UINT64_C(1) << AZ_CMD_LOOP_EXIT))) {
-        status = AZ_UNSUPPORTED;
-        return 1;
-    }
-    az_deck_snapshot deck = { .size = sizeof deck };
-    int rc = library->deck_snapshot(0, &deck);
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now)) {
-        status = AZ_FAILED;
-        return 1;
+        return 0;
     }
     const int seconds = compare_timestamps(now.tv_sec, 0, 1, 1000000000, 1);
     const int nanos = compare_timestamps(now.tv_nsec, 1000000000L, 1000000000, 1000000000, 1);
@@ -110,21 +114,13 @@ static int input(const az_event *event, void *user)
                                          (UINT64_MAX - (uint64_t)now.tv_nsec - UINT64_C(5000000000)) / UINT64_C(1000000000), 1, 1000000000, 1);
     if (seconds == AZ_TIME_INVALID || seconds == AZ_TIME_BEFORE || nanos == AZ_TIME_INVALID || nanos != AZ_TIME_BEFORE ||
         range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) {
-        status = AZ_FAILED;
-        return 1;
+        return 0;
     }
-    uint64_t ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
-    uint64_t generation = 0;
-    if (rc != AZ_OK || !az_read_native_load_target(&deck, 0, ns, &generation)) {
-        status = rc == AZ_OK ? AZ_STALE : rc;
-        return 1;
-    }
-    static uint64_t next_request;
-    if (next_request == UINT64_MAX) {
-        status = AZ_LIMIT;
-        return 1;
-    }
-    az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .deck = 0, .request_id = ++next_request, .expected_load_generation = generation, .flags = AZ_COMMAND_NATIVE_LOAD, .quantization = AZ_QUANTIZE_NATIVE, .deadline_ns = ns + UINT64_C(5000000000) };
+    *ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+    return 1;
+}
+static void submit_command(az_command_request request)
+{
     az_command_result result = { .size = sizeof result };
     status = library->command_submit_async(ID, &request, complete, &command, &result);
     if (status == AZ_OK) {
@@ -141,8 +137,45 @@ static int input(const az_event *event, void *user)
                result.outcome == AZ_COMMAND_REJECTED && result.reason == status) {
         snprintf(lines[3], sizeof lines[3], "Request %llu refused: %d", (unsigned long long)request.request_id, result.reason);
     }
+}
+static void issue_exit(void)
+{
+    if (!exit_available()) {
+        status = AZ_UNSUPPORTED;
+        return;
+    }
+    az_deck_snapshot deck = { .size = sizeof deck };
+    int rc = library->deck_snapshot(0, &deck);
+    uint64_t ns;
+    if (!command_clock(&ns)) {
+        status = AZ_FAILED;
+        return;
+    }
+    uint64_t generation = 0;
+    if (rc != AZ_OK || !az_read_native_load_target(&deck, 0, ns, &generation)) {
+        status = rc == AZ_OK ? AZ_STALE : rc;
+        return;
+    }
+    static uint64_t next_request;
+    if (next_request == UINT64_MAX) {
+        status = AZ_LIMIT;
+        return;
+    }
+    az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .deck = 0, .request_id = ++next_request, .expected_load_generation = generation, .flags = AZ_COMMAND_NATIVE_LOAD, .quantization = AZ_QUANTIZE_NATIVE, .deadline_ns = ns + UINT64_C(5000000000) };
+    submit_command(request);
+}
+static int input(const az_event *event, void *user)
+{
+    (void)user;
+    if (event->kind != AZ_EV_CLICK) return 0;
+    if (command.phase != IDLE) return 1;
+    attempted = 1;
+    lines[3][0] = lines[5][0] = lines[6][0] = 0;
+    protocol_error = 0;
+    issue_exit();
     return 1;
 }
+
 static int init(const az_core_v1 *c)
 {
     if (!AZ_HAS(c, library_service)) return -1;

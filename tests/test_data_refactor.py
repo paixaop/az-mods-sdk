@@ -41,6 +41,9 @@ class DataRefactor(unittest.TestCase):
     def test_readers_asan_ubsan(self):
         self.run_fixture('data-helpers.c', sanitize=True)
 
+    def test_loop_watch_callbacks(self):
+        self.run_fixture("loop-watch.c", sanitize=True)
+
     def test_deck_status_readers(self):
         self.run_fixture('deck-status-helpers.c')
         self.run_fixture('deck-status-helpers.c', standard="gnu17")
@@ -64,6 +67,15 @@ class DataRefactor(unittest.TestCase):
 
     def test_cue_rendering(self):
         self.run_fixture('inspector-cues.c', sanitize=True)
+
+    def test_analysis_requests_and_waveform_rendering(self):
+        self.run_fixture('inspector-analysis.c', sanitize=True)
+
+    def test_inspector_page_navigation_and_redraw(self):
+        self.run_fixture('inspector-pages.c', sanitize=True)
+
+    def test_cue_worker_lifetime(self):
+        self.run_fixture("cue-command-lifetime.c", sanitize=True)
 
     def test_cue_command_client(self):
         self.run_fixture('cue-command-async.c', sanitize=True)

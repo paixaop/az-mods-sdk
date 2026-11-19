@@ -20,6 +20,20 @@ static uint64_t submitted_id;
 static az_command_completion_fn callback;
 static void *context;
 static void redraw(void) { ++redraws; }
+static unsigned painted;
+static uint32_t color(int key)
+{
+    (void)key;
+    return 0xffffff;
+}
+static int width(const char *text, int px) { return (int)strlen(text) * px / 2; }
+static void paint(az_draw *d, int x, int y, const char *text, int px, uint32_t rgb)
+{
+    (void)d;
+    (void)text;
+    assert(x >= 0 && y >= 0 && px == 16 && rgb == 0xffffff);
+    ++painted;
+}
 static const az_library_v1 *get_service(uint32_t abi) { return abi == AZ_LIBRARY_ABI ? &service : NULL; }
 static int caps(az_data_capabilities *out)
 {
@@ -82,11 +96,19 @@ static void click(void)
 int main(void)
 {
     service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service, .data_capabilities = caps, .deck_snapshot = snapshot, .command_submit_async = submit, .command_acknowledge = acknowledge };
-    az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .request_redraw = redraw };
+    az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .request_redraw = redraw, .color = color, .text_width = width, .draw_text = paint };
     assert(!init(&c));
+    tick();
+    assert(strstr(lines[1], "available") && strstr(lines[2], "No command"));
+    draw(NULL, (az_rect){ 0, 0, 1280, 800 }, NULL);
+    assert(painted == 8);
+    draw(NULL, (az_rect){ 0, 0, 10, 10 }, NULL);
+    assert(painted == 8);
     submit_rc = AZ_INVALID;
     click();
     assert(command.phase == IDLE && !command.id && !lines[3][0]);
+    tick();
+    assert(strstr(lines[2], "Last attempt"));
     submit_rc = AZ_BUSY;
     click();
     assert(command.phase == IDLE && !lines[3][0]);

@@ -1,0 +1,11 @@
+{
+  "base": "b7e93031af1f80845ca5fb6872c3eb97fa97dd21",
+  "threshold": 10,
+  "paths": [
+    "include/",
+    "examples/",
+    "template/",
+    "tools/harness/"
+  ],
+  "exclude": ["*/tests/*"]
+}

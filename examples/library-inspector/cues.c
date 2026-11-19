@@ -60,53 +60,76 @@ static void draw(az_draw *d, az_rect area, void *user)
         if (core->text_width(lines[i], 16) < area.w - 16) core->draw_text(d, area.x + 8, y, lines[i], 16, color);
     }
 }
-static void tick(void)
+static int retry_waiting(void)
 {
-    if (!atomic_load_explicit(&catalog_ready, memory_order_acquire)) return;
-    if (!catalog_count) {
-        snprintf(lines[1], sizeof lines[1], "USB 1: no tracks available (status %d)", catalog_status);
-        return;
-    }
-    if (selected != issued) {
-        struct timespec now;
-        if (retry_selected == selected && !clock_gettime(CLOCK_MONOTONIC, &now) &&
-            compare_timestamps((uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec, retry_after_ns, 1000000000, 1000000000, 1) == AZ_TIME_BEFORE) return;
-        retry_selected = -1;
-        if (ticket && library->track_release(ID, ticket) != AZ_OK) return;
-        ticket = 0;
-        clear_cues();
-        snprintf(lines[1], sizeof lines[1], "%d/%d: %.80s", selected + 1, catalog_count, catalog[selected].title);
-        int rc = library->track_request(ID, &catalog[selected].ref, AZ_DATA_METADATA | AZ_DATA_CUES, &ticket);
-        if (rc == AZ_BUSY) return;
-        issued = selected;
-        if (rc != AZ_OK) {
-            snprintf(lines[2], sizeof lines[2], "Request status %d", rc);
-            return;
-        }
-    }
-    if (!ticket) return;
-    const az_track_snapshot *s = NULL;
-    int rc = library->track_acquire(ID, ticket, &s);
-    if (rc == AZ_BUSY) return;
+    struct timespec now;
+    if (retry_selected != selected || clock_gettime(CLOCK_MONOTONIC, &now)) return 0;
+    int order = compare_timestamps((uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec,
+                                   retry_after_ns, 1000000000, 1000000000, 1);
+    if (order == AZ_TIME_INVALID) return 0;
+    return order == AZ_TIME_BEFORE;
+}
+static int select_track(void)
+{
+    if (retry_waiting()) return 0;
+    retry_selected = -1;
+    if (ticket && library->track_release(ID, ticket) != AZ_OK) return 0;
+    ticket = 0;
+    clear_cues();
+    snprintf(lines[1], sizeof lines[1], "%d/%d: %.80s", selected + 1, catalog_count, catalog[selected].title);
+    int rc = library->track_request(ID, &catalog[selected].ref, AZ_DATA_METADATA | AZ_DATA_CUES, &ticket);
+    if (rc == AZ_BUSY) return 0;
+    issued = selected;
     if (rc != AZ_OK) {
-        clear_cues();
-        if (rc == AZ_PENDING) snprintf(lines[2], sizeof lines[2], "Loading saved cues");
-        else snprintf(lines[2], sizeof lines[2], "Track data status %d", rc);
-        if (rc != AZ_PENDING && library->track_release(ID, ticket) == AZ_OK) {
-            ticket = 0;
-            /* A backing-file change need not invalidate its source reference. Retry
-             * at most once a second; a stale source is refused without old cue rows. */
-            if (rc == AZ_STALE) {
-                struct timespec now;
-                if (!clock_gettime(CLOCK_MONOTONIC, &now)) {
-                    retry_after_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec + UINT64_C(1000000000);
-                    retry_selected = selected;
-                    issued = -1;
-                }
-            }
-        }
-        return;
+        snprintf(lines[2], sizeof lines[2], "Request status %d", rc);
+        return 0;
     }
+    return 1;
+}
+static void retry_stale_track(void)
+{
+    struct timespec now;
+    if (!clock_gettime(CLOCK_MONOTONIC, &now)) {
+        retry_after_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec + UINT64_C(1000000000);
+        retry_selected = selected;
+        issued = -1;
+    }
+}
+static void track_unavailable(int rc)
+{
+    clear_cues();
+    if (rc == AZ_PENDING) snprintf(lines[2], sizeof lines[2], "Loading saved cues");
+    else snprintf(lines[2], sizeof lines[2], "Track data status %d", rc);
+    if (rc != AZ_PENDING && library->track_release(ID, ticket) == AZ_OK) {
+        ticket = 0;
+        /* Retry changed backing files at most once a second, without old rows. */
+        if (rc == AZ_STALE) retry_stale_track();
+    }
+}
+static void format_loop_end(const az_cue_entry *c, char *end, size_t capacity)
+{
+    if (c->type == AZ_CUE_LOOP) {
+        if (c->valid & AZ_CUE_END) snprintf(end, capacity, " loop to %.3fs", c->end_s);
+        else snprintf(end, capacity, " loop to unavailable");
+    }
+}
+static void format_row(int i, const az_cue_entry *c)
+{
+    char start[32] = "unavailable", end[48] = "", color[32] = "";
+    if (c->valid & AZ_CUE_START) snprintf(start, sizeof start, "%.3fs", c->start_s);
+    format_loop_end(c, end, sizeof end);
+    if (c->classification == AZ_CUE_MEMORY && (c->valid & AZ_CUE_COLOR_ID))
+        snprintf(color, sizeof color, " palette %u", c->color_id);
+    snprintf(lines[i + 3], sizeof lines[i + 3], "%s %u %s%s%s %.28s",
+             c->classification == AZ_CUE_HOT ? "HOT" : "MEM", c->entry_id, start, end, color,
+             c->valid & AZ_CUE_COMMENT ? c->comment : "");
+    if (c->classification == AZ_CUE_HOT && (c->valid & AZ_CUE_COLOR)) {
+        row_colors[i] = c->rgb;
+        row_colored[i] = 1;
+    }
+}
+static void format_cues(const az_track_snapshot *s)
+{
     cue_count = s->cue_count;
     if (s->cues_info.availability != AZ_AVAIL_READY && s->cues_info.availability != AZ_AVAIL_EMPTY) {
         clear_cues();
@@ -119,26 +142,35 @@ static void tick(void)
         row_colors[i] = 0;
         row_colored[i] = 0;
         uint32_t index = (uint32_t)cue_cursor + (uint32_t)i;
-        if (index >= cue_count) continue;
-        const az_cue_entry *c = &s->cues[index];
-        char start[32] = "unavailable", end[48] = "", color[32] = "";
-        if (c->valid & AZ_CUE_START) snprintf(start, sizeof start, "%.3fs", c->start_s);
-        if (c->type == AZ_CUE_LOOP) {
-            if (c->valid & AZ_CUE_END) snprintf(end, sizeof end, " loop to %.3fs", c->end_s);
-            else snprintf(end, sizeof end, " loop to unavailable");
-        }
-        if (c->classification == AZ_CUE_MEMORY && (c->valid & AZ_CUE_COLOR_ID))
-            snprintf(color, sizeof color, " palette %u", c->color_id);
-        snprintf(lines[i + 3], sizeof lines[i + 3], "%s %u %s%s%s %.28s",
-                 c->classification == AZ_CUE_HOT ? "HOT" : "MEM", c->entry_id, start, end, color,
-                 c->valid & AZ_CUE_COMMENT ? c->comment : "");
-        if (c->classification == AZ_CUE_HOT && (c->valid & AZ_CUE_COLOR)) {
-            row_colors[i] = c->rgb;
-            row_colored[i] = 1;
-        }
+        if (index < cue_count) format_row(i, &s->cues[index]);
     }
-    /* One bounded ticket pins the selected track. A new selection releases it first. */
 }
+static void tick(void)
+{
+    if (!atomic_load_explicit(&catalog_ready, memory_order_acquire)) return;
+    if (!catalog_count) {
+        snprintf(lines[1], sizeof lines[1], "USB 1: no tracks available (status %d)", catalog_status);
+        return;
+    }
+    if (selected != issued && !select_track()) return;
+    if (!ticket) return;
+    const az_track_snapshot *s = NULL;
+    int rc = library->track_acquire(ID, ticket, &s);
+    if (rc == AZ_BUSY) return;
+    if (rc != AZ_OK) {
+        track_unavailable(rc);
+        return;
+    }
+    format_cues(s);
+    /* One bounded ticket pins the selected track until a new selection. */
+}
+static void move_selection(int direction)
+{
+    int step = direction < 0 ? -1 : 1;
+    if (browse_cues && cue_count) cue_cursor = (cue_cursor + step + (int)cue_count) % (int)cue_count;
+    else selected = (selected + step + catalog_count) % catalog_count;
+}
+
 static int input(const az_event *event, void *user)
 {
     (void)user;
@@ -152,15 +184,17 @@ static int input(const az_event *event, void *user)
         return 1;
     }
     if (event->kind != AZ_EV_KNOB || !event->dir) return 0;
-    int step = event->dir < 0 ? -1 : 1;
-    if (browse_cues && cue_count) cue_cursor = (cue_cursor + step + (int)cue_count) % (int)cue_count;
-    else selected = (selected + step + catalog_count) % catalog_count;
+    move_selection(event->dir);
     return 1;
+}
+static int services_available(const az_core_v1 *c)
+{
+    return AZ_LIB_HAS(library, data_capabilities) && AZ_LIB_HAS(library, track_resolve) && AZ_LIB_HAS(library, track_request) &&
+           AZ_LIB_HAS(library, track_acquire) && AZ_LIB_HAS(library, track_release) && AZ_HAS(c, thread_start) && AZ_LIB_HAS(library, lib_tracks);
 }
 static int init(const az_core_v1 *c)
 {
-    if (!AZ_LIB_HAS(library, data_capabilities) || !AZ_LIB_HAS(library, track_resolve) || !AZ_LIB_HAS(library, track_request) ||
-        !AZ_LIB_HAS(library, track_acquire) || !AZ_LIB_HAS(library, track_release) || !AZ_HAS(c, thread_start) || !AZ_LIB_HAS(library, lib_tracks)) return -1;
+    if (!services_available(c)) return -1;
     core = c;
     ticket = 0;
     selected = 0;

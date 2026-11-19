@@ -85,16 +85,19 @@ static void cue_note_activity(uint64_t now)
     }
     cue.worker_idle_deadline_ns = now + CUE_IDLE_NS;
 }
-static int cue_worker_continue(uint64_t now)
+static int cue_worker_expired(uint64_t now)
 {
-    const int started = compare_timestamps(now, cue.worker_started_ns, 1000000000, 1000000000, 1);
-    if (!now || !cue.worker_started_ns || started == AZ_TIME_INVALID || started == AZ_TIME_BEFORE) return 0;
     const int idle = compare_timestamps(now, cue.worker_idle_deadline_ns, 1000000000, 1000000000, 1);
     const int lifetime = compare_timestamps(now, cue.worker_started_ns + CUE_LIFETIME_NS, 1000000000, 1000000000, 1);
-    int closing = cue.io_failed || cue.sequence >= 8192 || cue.worker_drain_deadline_ns ||
-                  idle == AZ_TIME_INVALID || idle >= AZ_TIME_EQUAL || lifetime == AZ_TIME_INVALID || lifetime >= AZ_TIME_EQUAL;
-    if (!closing) return 1;
-    if (!cue.pending) return 0;
+    return idle == AZ_TIME_INVALID || idle >= AZ_TIME_EQUAL || lifetime == AZ_TIME_INVALID || lifetime >= AZ_TIME_EQUAL;
+}
+static int cue_worker_closing(uint64_t now)
+{
+    return cue.io_failed || cue.sequence >= 8192 || cue.worker_drain_deadline_ns || cue_worker_expired(now);
+}
+
+static int cue_worker_drain(uint64_t now)
+{
     if (!cue.worker_drain_deadline_ns) {
         const int range = compare_timestamps(now, UINT64_MAX - CUE_DRAIN_NS, 1000000000, 1000000000, 1);
         if (range == AZ_TIME_INVALID || range == AZ_TIME_AFTER) return 0;
@@ -102,6 +105,15 @@ static int cue_worker_continue(uint64_t now)
     }
     const int draining = compare_timestamps(now, cue.worker_drain_deadline_ns, 1000000000, 1000000000, 1);
     return draining != AZ_TIME_INVALID && draining == AZ_TIME_BEFORE;
+}
+
+static int cue_worker_continue(uint64_t now)
+{
+    const int started = compare_timestamps(now, cue.worker_started_ns, 1000000000, 1000000000, 1);
+    if (!now || !cue.worker_started_ns || started == AZ_TIME_INVALID || started == AZ_TIME_BEFORE) return 0;
+    if (!cue_worker_closing(now)) return 1;
+    if (!cue.pending) return 0;
+    return cue_worker_drain(now);
 }
 static int cue_integer(const char *s, uint64_t *out)
 {
@@ -154,30 +166,56 @@ static void cue_hex(const char in[128], char out[257])
     }
     out[n * 2] = 0;
 }
+static int cue_field(char **at, const char *key, char **value, int last)
+{
+    size_t length = strlen(key);
+    if (strncmp(*at, key, length)) return 0;
+    *value = *at + length;
+    char *space = strchr(*value, ' ');
+    if (last) return space == NULL;
+    if (!space || space == *value) return 0;
+    *space = 0;
+    *at = space + 1;
+    return 1;
+}
+static int cue_fields(const char *line, size_t length, char *copy,
+                      const char *const *keys, char **values, unsigned count)
+{
+    if (!line || !length || length >= 1024 || line[length - 1] != '\n' || memchr(line, 0, length)) return 0;
+    memcpy(copy, line, length - 1);
+    copy[length - 1] = 0;
+    char *at = copy;
+    for (unsigned i = 0; i < count; ++i)
+        if (!cue_field(&at, keys[i], &values[i], i + 1 == count)) return 0;
+    return 1;
+}
+static int cue_action(const char *action)
+{
+    static const char *const actions[] = { "submit", "snapshot", "state", "cancel" };
+    for (unsigned i = 0; i < sizeof actions / sizeof *actions; ++i)
+        if (!strcmp(action, actions[i])) return 1;
+    return 0;
+}
+
+static int cue_integers(char *const values[17], uint64_t v[17])
+{
+    static const unsigned integer[] = { 0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15 };
+    static const unsigned narrow[] = { 5, 9, 10, 11, 15 };
+    for (unsigned i = 0; i < sizeof integer / sizeof *integer; i++)
+        if (!cue_integer(values[integer[i]], &v[integer[i]])) return 0;
+    for (unsigned i = 0; i < sizeof narrow / sizeof *narrow; i++)
+        if (v[narrow[i]] > UINT32_MAX) return 0;
+    return v[0] == 1 && v[4] <= 3;
+}
+
 static int cue_parse(const char *line, size_t n, struct cue_input *out)
 {
     static const char *keys[] = { "v=", "pid=", "action=", "id=", "deck=", "op=", "load=", "revision=", "timeout_ns=", "flags=", "classification=", "entry_id=", "position=", "end=", "beats=", "rgb=", "comment_hex=" };
-    if (!line || !out || !n || n > 1023 || line[n - 1] != '\n' || memchr(line, 0, n)) return 0;
-    char copy[1024], *values[17], *at = copy;
-    memcpy(copy, line, n - 1);
-    copy[n - 1] = 0;
-    for (unsigned i = 0; i < 17; i++) {
-        size_t k = strlen(keys[i]);
-        if (strncmp(at, keys[i], k)) return 0;
-        values[i] = at + k;
-        char *space = strchr(values[i], ' ');
-        if (i < 16) {
-            if (!space || space == values[i]) return 0;
-            *space = 0;
-            at = space + 1;
-        } else if (space) return 0;
-    }
+    if (!out) return 0;
+    char copy[1024], *values[17];
+    if (!cue_fields(line, n, copy, keys, values, 17)) return 0;
     uint64_t v[17] = { 0 };
-    unsigned integer[] = { 0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15 };
-    for (unsigned i = 0; i < sizeof integer / sizeof *integer; i++)
-        if (!cue_integer(values[integer[i]], &v[integer[i]])) return 0;
-    if (v[0] != 1 || v[4] > 3 || v[5] > UINT32_MAX || v[9] > UINT32_MAX || v[10] > UINT32_MAX || v[11] > UINT32_MAX || v[15] > UINT32_MAX || strlen(values[2]) > 8) return 0;
-    if (strcmp(values[2], "submit") && strcmp(values[2], "snapshot") && strcmp(values[2], "state") && strcmp(values[2], "cancel")) return 0;
+    if (!cue_integers(values, v) || !cue_action(values[2])) return 0;
     memset(out, 0, sizeof *out);
     out->pid = v[1];
     out->id = v[3];
@@ -200,6 +238,11 @@ static int cue_path(char *out, size_t n, const char *leaf)
     int k = snprintf(out, n, "%s/%s", d, leaf);
     return k > 0 && (size_t)k < n;
 }
+static int cue_owned_file(int fd, struct stat *st)
+{
+    return !fstat(fd, st) && S_ISREG(st->st_mode) && st->st_uid == geteuid();
+}
+
 static int cue_write(const char *line, size_t length)
 {
     char path[512], leaf[64];
@@ -208,40 +251,82 @@ static int cue_write(const char *line, size_t length)
     int fd = open(path, O_WRONLY | O_APPEND | O_NOFOLLOW | O_NONBLOCK);
     if (fd < 0) return 0;
     struct stat st;
-    int ok = !fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_uid == geteuid() && st.st_size >= 0 && (uint64_t)st.st_size + length <= LIMIT;
+    int ok = cue_owned_file(fd, &st) && st.st_size >= 0 && (uint64_t)st.st_size + length <= LIMIT;
     if (ok) ok = write(fd, line, length) == (ssize_t)length;
     if (close(fd)) ok = 0;
     if (!ok) cue.io_failed = 1;
     return ok;
 }
 static int cue_result(const az_command_result *r, uint64_t id) { return az_command_result_matches(r, id); }
+struct cue_observation {
+    az_deck_snapshot snapshot;
+    az_native_cue_snapshot cues;
+    int load, bounds, engagement, engaged, cues_rc;
+    double in_s, out_s;
+};
+static int cue_cues_valid(const az_native_cue_snapshot *c, unsigned deck)
+{
+    return c->size >= sizeof *c && c->version == AZ_DATA_VERSION && c->deck == deck && c->count <= AZ_NATIVE_CUE_LIMIT;
+}
+static void cue_observe_loop(struct cue_observation *o, unsigned deck, uint64_t query)
+{
+    o->bounds = az_read_loop_bounds(&o->snapshot, deck, query, &o->in_s, &o->out_s);
+    o->engagement = az_read_loop_engaged(&o->snapshot, deck, query, &o->engaged);
+    if (!o->bounds) o->in_s = o->out_s = 0;
+    if (!o->engagement) o->engaged = -1;
+}
+static struct cue_observation cue_observe(const struct cue_input *v, int entries)
+{
+    struct cue_observation o = { .snapshot.size = sizeof o.snapshot, .cues.size = sizeof o.cues, .engaged = -1 };
+    int sr = cue.lib->deck_snapshot((int)v->deck, &o.snapshot);
+    uint64_t generation = 0, query = cue_now();
+    o.load = sr == AZ_OK && az_read_native_load_target(&o.snapshot, v->deck, query, &generation);
+    if (sr == AZ_OK) cue_observe_loop(&o, v->deck, query);
+    else memset(&o.snapshot, 0, sizeof o.snapshot);
+    o.cues_rc = entries ? cue.lib->native_cues((int)v->deck, &o.cues) : AZ_UNSUPPORTED;
+    if (o.cues_rc == AZ_OK && !cue_cues_valid(&o.cues, v->deck)) o.cues_rc = AZ_INVALID;
+    if (o.cues_rc != AZ_OK) memset(&o.cues, 0, sizeof o.cues);
+    return o;
+}
+static void cue_emit_entries(unsigned deck, uint64_t seq, const az_native_cue_snapshot *c)
+{
+    for (unsigned i = 0; i < c->count; i++) {
+        const az_cue_entry *e = &c->entries[i];
+        char line[1536], comment[257];
+        cue_hex(e->comment, comment);
+        int n = snprintf(line, sizeof line, "SDK_CUE_ENTRY v=1 snapshot_seq=%llu deck=%u load=%llu revision=%llu classification=%u entry_id=%u slot=%u valid=%u type=%u start=%.17g end=%.17g rgb=%u color_id=%u saved=%d modified=%d auto_active=%d comment_hex=%s\n", (unsigned long long)seq, deck, (unsigned long long)c->native_load_generation, (unsigned long long)c->revision, e->classification, e->entry_id, e->slot, e->valid, e->type, e->valid & AZ_CUE_START ? e->start_s : 0, e->valid & AZ_CUE_END ? e->end_s : 0, e->rgb, e->color_id, e->saved, e->modified, e->auto_active, comment);
+        if (n > 0 && (size_t)n < sizeof line) cue_enqueue(line, (size_t)n);
+    }
+}
+
 static void cue_emit(const char *event, const struct cue_input *v, int rc, const az_command_result *r, int entries)
 {
-    az_deck_snapshot s = { .size = sizeof s };
-    int sr = cue.lib->deck_snapshot((int)v->deck, &s);
-    uint64_t generation = 0, query = cue_now();
-    int engaged = -1;
-    double in_s = 0, out_s = 0;
-    int load = sr == AZ_OK && az_read_native_load_target(&s, v->deck, query, &generation);
-    int bounds = sr == AZ_OK && az_read_loop_bounds(&s, v->deck, query, &in_s, &out_s);
-    int engagement = sr == AZ_OK && az_read_loop_engaged(&s, v->deck, query, &engaged);
-    az_native_cue_snapshot c = { .size = sizeof c };
-    int cr = entries ? cue.lib->native_cues((int)v->deck, &c) : AZ_UNSUPPORTED;
-    if (cr == AZ_OK && (c.size < sizeof c || c.version != AZ_DATA_VERSION || c.deck != v->deck || c.count > AZ_NATIVE_CUE_LIMIT)) cr = AZ_INVALID;
-    unsigned count = cr == AZ_OK ? c.count : 0;
+    struct cue_observation observed = cue_observe(v, entries);
+    az_deck_snapshot s = observed.snapshot;
+    az_native_cue_snapshot c = observed.cues;
+    int load = observed.load, bounds = observed.bounds;
+    int engaged = observed.engaged, cr = observed.cues_rc;
+    double in_s = observed.in_s, out_s = observed.out_s;
+    unsigned count = c.count;
+    if (!(s.main_cue.valid & AZ_CUE_START)) s.main_cue.start_s = 0;
+    az_command_result result = { 0 };
+    int outcome = -1;
+    if (r) {
+        result = *r;
+        outcome = (int)r->outcome;
+    }
     uint64_t seq = ++cue.sequence, now = cue_now();
     char line[1536];
-    int n = snprintf(line, sizeof line, "SDK_CUE v=1 seq=%llu event=%s id=%llu deck=%u op=%u target_load=%llu target_revision=%llu flags=%u classification=%u entry_id=%u rgb=%u timeout_ns=%llu submitted_ns=%llu deadline_ns=%llu rc=%d outcome=%d reason=%d revision=%llu receipt_ns=%llu query_ns=%llu load_valid=%d native_load=%llu load_unit=%llu load_ns=%llu loop_valid=%d engaged=%d loop_in=%.17g loop_out=%.17g main_valid=%u main_s=%.17g cues_rc=%d cues_load=%llu cues_rev=%llu cue_count=%u\n", (unsigned long long)seq, event, (unsigned long long)v->id, v->deck, v->op, (unsigned long long)v->load, (unsigned long long)v->revision, v->flags, v->classification, v->entry, v->rgb, (unsigned long long)v->timeout, (unsigned long long)v->submitted_ns, (unsigned long long)v->deadline, rc, r ? (int)r->outcome : -1, r ? r->reason : 0, (unsigned long long)(r ? r->revision : 0), (unsigned long long)(r ? r->observed_ns : 0), (unsigned long long)now, !!load, (unsigned long long)(load ? s.native_load_generation : 0), (unsigned long long)(load ? s.native_load_unit_generation : 0), (unsigned long long)(load ? s.native_load_observed_ns : 0), bounds, engagement ? engaged : -1, bounds ? in_s : 0, bounds ? out_s : 0, sr == AZ_OK ? s.main_cue.valid : 0, sr == AZ_OK && (s.main_cue.valid & AZ_CUE_START) ? s.main_cue.start_s : 0, cr, (unsigned long long)(cr == AZ_OK ? c.native_load_generation : 0), (unsigned long long)(cr == AZ_OK ? c.revision : 0), count);
+    int n = snprintf(line, sizeof line, "SDK_CUE v=1 seq=%llu event=%s id=%llu deck=%u op=%u target_load=%llu target_revision=%llu flags=%u classification=%u entry_id=%u rgb=%u timeout_ns=%llu submitted_ns=%llu deadline_ns=%llu rc=%d outcome=%d reason=%d revision=%llu receipt_ns=%llu query_ns=%llu load_valid=%d native_load=%llu load_unit=%llu load_ns=%llu loop_valid=%d engaged=%d loop_in=%.17g loop_out=%.17g main_valid=%u main_s=%.17g cues_rc=%d cues_load=%llu cues_rev=%llu cue_count=%u\n", (unsigned long long)seq, event, (unsigned long long)v->id, v->deck, v->op, (unsigned long long)v->load, (unsigned long long)v->revision, v->flags, v->classification, v->entry, v->rgb, (unsigned long long)v->timeout, (unsigned long long)v->submitted_ns, (unsigned long long)v->deadline, rc, outcome, result.reason, (unsigned long long)(result.revision), (unsigned long long)(result.observed_ns), (unsigned long long)now, !!load, (unsigned long long)(load ? s.native_load_generation : 0), (unsigned long long)(load ? s.native_load_unit_generation : 0), (unsigned long long)(load ? s.native_load_observed_ns : 0), bounds, engaged, in_s, out_s, s.main_cue.valid, s.main_cue.start_s, cr, (unsigned long long)(c.native_load_generation), (unsigned long long)(c.revision), count);
     if (n > 0 && (size_t)n < sizeof line) cue_enqueue(line, (size_t)n);
-    if (cr == AZ_OK)
-        for (unsigned i = 0; i < c.count; i++) {
-            az_cue_entry *e = &c.entries[i];
-            char comment[257];
-            cue_hex(e->comment, comment);
-            n = snprintf(line, sizeof line, "SDK_CUE_ENTRY v=1 snapshot_seq=%llu deck=%u load=%llu revision=%llu classification=%u entry_id=%u slot=%u valid=%u type=%u start=%.17g end=%.17g rgb=%u color_id=%u saved=%d modified=%d auto_active=%d comment_hex=%s\n", (unsigned long long)seq, v->deck, (unsigned long long)c.native_load_generation, (unsigned long long)c.revision, e->classification, e->entry_id, e->slot, e->valid, e->type, e->valid & AZ_CUE_START ? e->start_s : 0, e->valid & AZ_CUE_END ? e->end_s : 0, e->rgb, e->color_id, e->saved, e->modified, e->auto_active, comment);
-            if (n > 0 && (size_t)n < sizeof line) cue_enqueue(line, (size_t)n);
-        }
+    cue_emit_entries(v->deck, seq, &c);
 }
+static int cue_released(const az_command_completion *c)
+{
+    return c->kind == AZ_COMMAND_COMPLETION_RELEASED && c->settled == 1 &&
+           cue.terminal && cue.acknowledged && probe_terminal_equal(&cue_terminal, &c->result);
+}
+
 static void cue_complete(const az_command_completion *c, void *user)
 {
     if (user != &cue || !cue.pending || !probe_completion_valid(c, cue.active.id)) {
@@ -255,55 +340,55 @@ static void cue_complete(const az_command_completion *c, void *user)
         int rc = cue.lib->command_acknowledge(ID, cue.active.id);
         cue.acknowledged = rc == AZ_OK;
         cue_emit("acknowledge", &cue.active, rc, &cue_terminal, 0);
-    } else if (c->kind == AZ_COMMAND_COMPLETION_RELEASED && c->settled == 1 && cue.terminal && cue.acknowledged && probe_terminal_equal(&cue_terminal, &c->result)) {
+    } else if (cue_released(c)) {
         cue_emit("released", &cue.active, AZ_OK, &cue_terminal, 0);
         cue.pending = cue.terminal = cue.acknowledged = 0;
     } else cue.core->log(ID, "SDK_CUE_PROTOCOL out-of-order completion; context retained");
 }
-static int cue_handle(const struct cue_input *v)
+static int cue_payload_empty(const struct cue_input *v)
 {
-    uint64_t now = cue_now();
-    if (v->pid != (uint64_t)getpid() || !now) {
-        cue_emit("refused", v, AZ_STALE, NULL, 0);
-        return AZ_STALE;
-    }
-    if (!strcmp(v->action, "snapshot") || !strcmp(v->action, "state")) {
-        if (v->id || v->op || v->load || v->timeout || v->revision || v->flags || v->classification || v->entry || v->rgb || v->position || v->end || v->beats || v->comment[0]) {
-            cue_emit("refused", v, AZ_INVALID, NULL, 0);
-            return AZ_INVALID;
-        }
-        cue_note_activity(now);
-        cue_emit("snapshot", v, AZ_OK, NULL, !strcmp(v->action, "snapshot"));
-        return AZ_OK;
-    }
-    if (!strcmp(v->action, "cancel")) {
-        if (!cue.pending || v->id != cue.active.id || v->deck != cue.active.deck || v->op || v->load || v->timeout || v->revision || v->flags || v->classification || v->entry || v->rgb || v->position || v->end || v->beats || v->comment[0]) {
-            cue_emit("refused", v, AZ_INVALID, NULL, 0);
-            return AZ_INVALID;
-        }
-        az_command_result r = { .size = sizeof r };
-        int rc = cue.lib->command_cancel(ID, v->id, &r);
-        cue_emit("cancel", &cue.active, rc, (rc == AZ_OK || rc == AZ_PENDING || rc == AZ_STALE) && cue_result(&r, v->id) ? &r : NULL, 0);
-        return rc;
-    }
-    if (!v->id || !v->load || !v->timeout || compare_timestamps(v->timeout, UINT64_C(30000000000), 1000000000, 1000000000, 1) == AZ_TIME_AFTER || v->op < AZ_CMD_LOOP_IN || v->op > AZ_CMD_CUE_LOOP_SET) {
-        cue_emit("refused", v, AZ_INVALID, NULL, 0);
-        return AZ_INVALID;
-    }
-    if (v->id <= cue.highwater) {
-        cue_emit("refused", v, AZ_STALE, NULL, 0);
-        return AZ_STALE;
-    }
-    if (cue.pending) {
-        cue_emit("refused", v, AZ_BUSY, NULL, 0);
-        return AZ_BUSY;
-    }
-    cue.highwater = v->id;
+    return !v->classification && !v->entry && !v->rgb && !v->position && !v->end && !v->beats && !v->comment[0];
+}
+static int cue_command_empty(const struct cue_input *v)
+{
+    return !v->op && !v->load && !v->timeout && !v->revision && !v->flags && cue_payload_empty(v);
+}
+static int cue_refuse(const struct cue_input *v, int status)
+{
+    cue_emit("refused", v, status, NULL, 0);
+    return status;
+}
+static int cue_snapshot_action(const struct cue_input *v, uint64_t now)
+{
+    if (v->id || !cue_command_empty(v)) return cue_refuse(v, AZ_INVALID);
+    cue_note_activity(now);
+    cue_emit("snapshot", v, AZ_OK, NULL, !strcmp(v->action, "snapshot"));
+    return AZ_OK;
+}
+static int cue_cancel_action(const struct cue_input *v)
+{
+    if (!cue.pending || v->id != cue.active.id || v->deck != cue.active.deck || !cue_command_empty(v)) return cue_refuse(v, AZ_INVALID);
+    az_command_result r = { .size = sizeof r };
+    int rc = cue.lib->command_cancel(ID, v->id, &r);
+    int result_valid = (rc == AZ_OK || rc == AZ_PENDING || rc == AZ_STALE) && cue_result(&r, v->id);
+    cue_emit("cancel", &cue.active, rc, result_valid ? &r : NULL, 0);
+    return rc;
+}
+static int cue_submission_valid(const struct cue_input *v)
+{
+    const int timeout = compare_timestamps(v->timeout, UINT64_C(30000000000), 1000000000, 1000000000, 1);
+    return v->id && v->load && v->timeout && timeout != AZ_TIME_INVALID && timeout <= AZ_TIME_EQUAL &&
+           v->op >= AZ_CMD_LOOP_IN && v->op <= AZ_CMD_CUE_LOOP_SET;
+}
+static int cue_command_supported(unsigned op)
+{
     az_data_capabilities caps = { .size = sizeof caps };
-    if (cue.lib->data_capabilities(&caps) != AZ_OK || caps.size < sizeof caps || caps.version != AZ_DATA_VERSION || !(caps.commands & (UINT64_C(1) << v->op))) {
-        cue_emit("refused", v, AZ_UNSUPPORTED, NULL, 0);
-        return AZ_UNSUPPORTED;
-    }
+    return cue.lib->data_capabilities(&caps) == AZ_OK && caps.size >= sizeof caps &&
+           caps.version == AZ_DATA_VERSION && (caps.commands & (UINT64_C(1) << op));
+}
+
+static int cue_submit(const struct cue_input *v)
+{
     struct cue_input prepared = *v;
     prepared.submitted_ns = cue_now();
     const int range = compare_timestamps(prepared.submitted_ns, UINT64_MAX - prepared.timeout, 1000000000, 1000000000, 1);
@@ -326,6 +411,28 @@ static int cue_handle(const struct cue_input *v)
     }
     return rc;
 }
+static int cue_submit_action(const struct cue_input *v)
+{
+    if (!cue_submission_valid(v)) return cue_refuse(v, AZ_INVALID);
+    if (v->id <= cue.highwater) return cue_refuse(v, AZ_STALE);
+    if (cue.pending) return cue_refuse(v, AZ_BUSY);
+    cue.highwater = v->id;
+    if (!cue_command_supported(v->op)) return cue_refuse(v, AZ_UNSUPPORTED);
+    return cue_submit(v);
+}
+
+static int cue_handle(const struct cue_input *v)
+{
+    uint64_t now = cue_now();
+    if (v->pid != (uint64_t)getpid() || !now) {
+        cue_emit("refused", v, AZ_STALE, NULL, 0);
+        return AZ_STALE;
+    }
+    if (!strcmp(v->action, "snapshot") || !strcmp(v->action, "state")) return cue_snapshot_action(v, now);
+    if (!strcmp(v->action, "cancel")) return cue_cancel_action(v);
+    return cue_submit_action(v);
+}
+
 static void cue_step(void)
 {
     az_data_capabilities caps = { .size = sizeof caps };
@@ -361,6 +468,19 @@ static void cue_flush(void)
 /* This requests initiation only. post_ui can drop the job; busy then remains
  * set and no command ID, callback wait or cleanup ownership has been acquired.
  * Both the job and any accepted callback context live for the process. */
+static ssize_t cue_read_request(const char *processing, char line[1024])
+{
+    int fd = open(processing, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    ssize_t n = -1;
+    struct stat st;
+    if (fd >= 0) {
+        if (cue_owned_file(fd, &st) && st.st_size > 0 && st.st_size <= 1023) n = read(fd, line, 1024);
+        close(fd);
+    }
+    unlink(processing);
+    return n;
+}
+
 static void cue_worker_step(void)
 {
     cue_flush();
@@ -368,15 +488,8 @@ static void cue_worker_step(void)
     char input[512], processing[512];
     if (!cue_path(input, sizeof input, "request") || !cue_path(processing, sizeof processing, "request.processing")) return;
     if (rename(input, processing)) return;
-    int fd = open(processing, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     char line[1024];
-    ssize_t n = -1;
-    struct stat st;
-    if (fd >= 0) {
-        if (!fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_uid == geteuid() && st.st_size > 0 && st.st_size <= 1023) n = read(fd, line, sizeof line);
-        close(fd);
-    }
-    unlink(processing);
+    ssize_t n = cue_read_request(processing, line);
     memset(&cue_job.value, 0, sizeof cue_job.value);
     cue_job.valid = n > 0 && cue_parse(line, (size_t)n, &cue_job.value);
     atomic_store_explicit(&cue_job.busy, 1, memory_order_release);
@@ -388,6 +501,14 @@ static void cue_tick(void)
     if (!cue_worker_continue(cue_now())) atomic_store_explicit(&cue.worker_stop, 1, memory_order_release);
     cue_step();
 }
+static int cue_worker_time_valid(uint64_t start, uint64_t now)
+{
+    const int ordered = compare_timestamps(now, start, 1000000000, 1000000000, 1);
+    if (!start || !now || ordered == AZ_TIME_INVALID || ordered == AZ_TIME_BEFORE) return 0;
+    const int elapsed = compare_timestamps(now - start, CUE_LIFETIME_NS, 1000000000, 1000000000, 1);
+    return elapsed != AZ_TIME_INVALID && elapsed < AZ_TIME_EQUAL;
+}
+
 static void *cue_worker(void *unused)
 {
     (void)unused;
@@ -396,10 +517,7 @@ static void *cue_worker(void *unused)
     uint64_t start = cue_now();
     for (unsigned n = 0; n < 144000; ++n) {
         uint64_t now = cue_now();
-        const int ordered = compare_timestamps(now, start, 1000000000, 1000000000, 1);
-        const int elapsed = compare_timestamps(now - start, CUE_LIFETIME_NS, 1000000000, 1000000000, 1);
-        if (!start || !now || ordered == AZ_TIME_INVALID || ordered == AZ_TIME_BEFORE ||
-            elapsed == AZ_TIME_INVALID || elapsed >= AZ_TIME_EQUAL) break;
+        if (!cue_worker_time_valid(start, now)) break;
         if (atomic_load_explicit(&cue.worker_stop, memory_order_acquire)) break;
         cue_worker_step();
         struct timespec t = { 0, 50000000 };
@@ -409,11 +527,33 @@ static void *cue_worker(void *unused)
     cue.core->log(ID, "SDK_CUE_DONE; unreleased callback and scheduling contexts retained");
     return NULL;
 }
+static int cue_core_valid(const az_core_v1 *core)
+{
+    if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, data_dir) || !AZ_HAS(core, thread_start) || !AZ_HAS(core, library_service) || !AZ_HAS(core, log) || !AZ_HAS(core, post_ui)) return 0;
+    return 1;
+}
+static int cue_library_valid(const az_library_v1 *l)
+{
+    if (!AZ_LIB_HAS(l, data_capabilities) || !AZ_LIB_HAS(l, deck_snapshot) || !AZ_LIB_HAS(l, native_cues) || !AZ_LIB_HAS(l, command_submit_async) || !AZ_LIB_HAS(l, command_acknowledge) || !AZ_LIB_HAS(l, command_cancel)) return 0;
+    return 1;
+}
+
+static int cue_create_results(const char *path)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (fd < 0) return 0;
+    struct stat st;
+    int ok = !fstat(fd, &st) && S_ISREG(st.st_mode);
+    if (close(fd)) ok = 0;
+    if (!ok) return 0;
+    return 1;
+}
+
 static int init(const az_core_v1 *core)
 {
-    if (!core || core->abi != AZ_MOD_ABI || !AZ_HAS(core, data_dir) || !AZ_HAS(core, thread_start) || !AZ_HAS(core, library_service) || !AZ_HAS(core, log) || !AZ_HAS(core, post_ui)) return -1;
+    if (!cue_core_valid(core)) return -1;
     const az_library_v1 *l = core->library_service(AZ_LIBRARY_ABI);
-    if (!AZ_LIB_HAS(l, data_capabilities) || !AZ_LIB_HAS(l, deck_snapshot) || !AZ_LIB_HAS(l, native_cues) || !AZ_LIB_HAS(l, command_submit_async) || !AZ_LIB_HAS(l, command_acknowledge) || !AZ_LIB_HAS(l, command_cancel)) return -1;
+    if (!cue_library_valid(l)) return -1;
     memset(&cue, 0, sizeof cue);
     atomic_init(&cue.io_failed, 0);
     atomic_init(&cue.ui_ready, 0);
@@ -429,12 +569,7 @@ static int init(const az_core_v1 *core)
     char file[512], leaf[64];
     snprintf(leaf, sizeof leaf, "results.%ld.log", (long)getpid());
     if (!cue_path(file, sizeof file, leaf)) return -1;
-    int fd = open(file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK, 0600);
-    if (fd < 0) return -1;
-    struct stat st;
-    int ok = !fstat(fd, &st) && S_ISREG(st.st_mode);
-    if (close(fd)) ok = 0;
-    if (!ok) return -1;
+    if (!cue_create_results(file)) return -1;
     core->log(ID, "SDK_CUE_READY v=1 pid=%ld commands=%llu data=%s", (long)getpid(), (unsigned long long)cue.commands, core->data_dir(ID));
     return core->thread_start(ID, "sdk-cue-command", cue_worker, NULL) == 0 ? 0 : -1;
 }

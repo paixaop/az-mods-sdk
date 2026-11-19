@@ -13,14 +13,21 @@ static int hb_context(const char *id, const char *operation)
     return 0;
 }
 
+static int hb_boolean(int value)
+{
+    return value == 0 || value == 1;
+}
+static int hb_options_valid(const az_beatport_login_options *options)
+{
+    return options && options->size >= sizeof *options &&
+           hb_boolean(options->auto_login) && hb_boolean(options->remember) &&
+           options->delay_sec >= 0 && options->delay_sec <= 600 &&
+           options->max_attempts >= 1 && options->max_attempts <= 4;
+}
 static int hb_configure(const char *id, const az_beatport_login_options *options)
 {
     if (hb_context(id, "beatport configure") != 0 ||
-        (!hb_configured && ctx != CTX_INIT) || !options || options->size < sizeof *options ||
-        (options->auto_login != 0 && options->auto_login != 1) ||
-        (options->remember != 0 && options->remember != 1) ||
-        options->delay_sec < 0 || options->delay_sec > 600 ||
-        options->max_attempts < 1 || options->max_attempts > 4)
+        (!hb_configured && ctx != CTX_INIT) || !hb_options_valid(options))
         return -1;
     hb_options = *options;
     if (!hb_configured) hb_status.save_pending = 1;

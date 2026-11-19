@@ -112,36 +112,40 @@ static inline int az_read_event_loop_engaged(const az_deck_status_event_v1 *e, i
     *engaged = loop->engaged;
     return 1;
 }
+struct az_data_loop_coordinate {
+    size_t end;
+    size_t info;
+    size_t point;
+};
+static inline int az_data_loop_coordinate(uint32_t field, struct az_data_loop_coordinate *out)
+{
+#define AZ_LOOP_COORD(member) {AZ_DATA_END(az_status_loop_v1, member##_info), \
+                              offsetof(az_status_loop_v1, member##_info), offsetof(az_status_loop_v1, member)}
+    static const struct az_data_loop_coordinate coordinates[] = {
+        AZ_LOOP_COORD(retained_in), AZ_LOOP_COORD(retained_out),
+        AZ_LOOP_COORD(working_in), AZ_LOOP_COORD(working_out)
+    };
+#undef AZ_LOOP_COORD
+    unsigned index;
+    switch (field) {
+    case AZ_STATUS_LOOP_RETAINED_IN: index = 0; break;
+    case AZ_STATUS_LOOP_RETAINED_OUT: index = 1; break;
+    case AZ_STATUS_LOOP_WORKING_IN: index = 2; break;
+    case AZ_STATUS_LOOP_WORKING_OUT: index = 3; break;
+    default: return 0;
+    }
+    *out = coordinates[index];
+    return 1;
+}
 static inline int az_read_event_loop_point(const az_deck_status_event_v1 *e, uint32_t field, double *seconds)
 {
     const az_status_loop_v1 *loop = az_data_event_loop_prefix(e, sizeof(az_status_topic_v1));
-    if (!seconds || !loop) return 0;
-    const az_status_field_info_v1 *info;
-    const az_status_coord_v1 *point;
-    switch (field) {
-    case AZ_STATUS_LOOP_RETAINED_IN:
-        if (!az_data_covers(loop, AZ_DATA_END(az_status_loop_v1, retained_in_info))) return 0;
-        info = &loop->retained_in_info;
-        point = &loop->retained_in;
-        break;
-    case AZ_STATUS_LOOP_RETAINED_OUT:
-        if (!az_data_covers(loop, AZ_DATA_END(az_status_loop_v1, retained_out_info))) return 0;
-        info = &loop->retained_out_info;
-        point = &loop->retained_out;
-        break;
-    case AZ_STATUS_LOOP_WORKING_IN:
-        if (!az_data_covers(loop, AZ_DATA_END(az_status_loop_v1, working_in_info))) return 0;
-        info = &loop->working_in_info;
-        point = &loop->working_in;
-        break;
-    case AZ_STATUS_LOOP_WORKING_OUT:
-        if (!az_data_covers(loop, AZ_DATA_END(az_status_loop_v1, working_out_info))) return 0;
-        info = &loop->working_out_info;
-        point = &loop->working_out;
-        break;
-    default:
-        return 0;
-    }
+    struct az_data_loop_coordinate coordinate;
+    if (!seconds || !loop || !az_data_loop_coordinate(field, &coordinate) ||
+        !az_data_covers(loop, coordinate.end)) return 0;
+    const unsigned char *bytes = (const unsigned char *)loop;
+    const az_status_field_info_v1 *info = (const az_status_field_info_v1 *)(bytes + coordinate.info);
+    const az_status_coord_v1 *point = (const az_status_coord_v1 *)(bytes + coordinate.point);
     if (!az_data_event_scalar_ready(e, &loop->header, field, info) ||
         !__builtin_isfinite(point->seconds)) return 0;
     /* This scalar reader classifies malformed numeric representations only.
@@ -157,15 +161,23 @@ static inline int az_data_phrase_map_equal(const az_status_phrase_endpoint_v1 *a
            a->grid.load_epoch == b->grid.load_epoch && a->grid.provider_id == b->grid.provider_id &&
            a->grid.revision == b->grid.revision && a->grid.provenance == b->grid.provenance && a->grid.grid_field == b->grid.grid_field;
 }
+static inline int az_data_phrase_grid_valid(const az_status_phrase_endpoint_v1 *p, uint64_t load)
+{
+    return load && p->grid.load_epoch == load && p->grid.provider_id && p->grid.revision &&
+           p->grid.grid_field == AZ_STATUS_GRID_CURRENT &&
+           p->grid.provenance >= AZ_PROV_NATIVE && p->grid.provenance <= AZ_PROV_DERIVED;
+}
+static inline int az_data_phrase_boundary_empty(const az_status_phrase_endpoint_v1 *p)
+{
+    return !p->index && !p->phrase.start_beat && !p->phrase.end_beat && !p->phrase.raw_kind &&
+           !p->phrase.raw_mood && !p->phrase.category && !p->phrase.reserved;
+}
 static inline int az_data_phrase_endpoint_valid(const az_status_phrase_endpoint_v1 *p, uint64_t load)
 {
-    if (!load || p->grid.load_epoch != load || !p->phrase_provider_id || !p->phrase_revision || !p->grid.provider_id ||
-        !p->grid.revision || p->grid.grid_field != AZ_STATUS_GRID_CURRENT ||
-        p->grid.provenance < AZ_PROV_NATIVE || p->grid.provenance > AZ_PROV_DERIVED) return 0;
+    if (!az_data_phrase_grid_valid(p, load) || !p->phrase_provider_id || !p->phrase_revision) return 0;
     if (p->kind == AZ_PHRASE_ITEM) return p->phrase.start_beat < p->phrase.end_beat;
-    return (p->kind == AZ_PHRASE_START || p->kind == AZ_PHRASE_END || p->kind == AZ_PHRASE_GAP) && !p->index &&
-           !p->phrase.start_beat && !p->phrase.end_beat && !p->phrase.raw_kind && !p->phrase.raw_mood &&
-           !p->phrase.category && !p->phrase.reserved;
+    return (p->kind == AZ_PHRASE_START || p->kind == AZ_PHRASE_END || p->kind == AZ_PHRASE_GAP) &&
+           az_data_phrase_boundary_empty(p);
 }
 static inline int az_data_phrase_endpoint_equal(const az_status_phrase_endpoint_v1 *a, const az_status_phrase_endpoint_v1 *b)
 {
@@ -173,6 +185,29 @@ static inline int az_data_phrase_endpoint_equal(const az_status_phrase_endpoint_
            a->phrase.start_beat == b->phrase.start_beat && a->phrase.end_beat == b->phrase.end_beat &&
            a->phrase.raw_kind == b->phrase.raw_kind && a->phrase.raw_mood == b->phrase.raw_mood &&
            a->phrase.category == b->phrase.category && a->phrase.reserved == b->phrase.reserved;
+}
+static inline int az_data_phrase_playback_ready(const az_deck_status_event_v1 *e,
+                                                const az_status_phrase_playback_v1 *state)
+{
+    return az_data_covers(state, AZ_DATA_END(az_status_phrase_playback_v1, active_info)) &&
+           state->header.version == AZ_DATA_VERSION &&
+           az_data_event_scalar_ready(e, &state->header, AZ_STATUS_PHRASE_TRANSITION_ACTIVE, &state->active_info) &&
+           state->active_info.scope == AZ_STATUS_LOAD_SCOPE && state->active;
+}
+static inline int az_data_phrase_transition_endpoints_valid(const az_status_phrase_transition_v1 *t, uint64_t load)
+{
+    return az_data_phrase_endpoint_valid(&t->from, load) && az_data_phrase_endpoint_valid(&t->to, load) &&
+           az_data_phrase_map_equal(&t->from, &t->to) &&
+           !(t->from.kind == t->to.kind && t->from.index == t->to.index);
+}
+static inline int az_data_phrase_transition_valid(const az_deck_status_event_v1 *e,
+                                                  const az_status_phrase_transition_v1 *t,
+                                                  const az_status_phrase_playback_v1 *state)
+{
+    if (!az_data_covers(t, sizeof *t) || t->version != AZ_DATA_VERSION || t->discontinuity > AZ_STATUS_WRAP ||
+        !az_data_phrase_playback_ready(e, state)) return 0;
+    return az_data_phrase_transition_endpoints_valid(t, e->load_epoch) &&
+           az_data_phrase_endpoint_equal(&t->to, state->active);
 }
 static inline int az_read_phrase_transition(const az_deck_status_event_v1 *e, az_status_phrase_transition_v1 *out)
 {
@@ -183,13 +218,7 @@ static inline int az_read_phrase_transition(const az_deck_status_event_v1 *e, az
         !az_data_covers(e, AZ_DATA_END(az_deck_status_event_v1, phrase_transition))) return 0;
     const az_status_phrase_transition_v1 *t = e->phrase_transition;
     const az_status_phrase_playback_v1 *state = view->phrase_playback;
-    if (!az_data_covers(t, sizeof *t) || t->version != AZ_DATA_VERSION || t->discontinuity > AZ_STATUS_WRAP ||
-        !az_data_covers(state, AZ_DATA_END(az_status_phrase_playback_v1, active_info)) || state->header.version != AZ_DATA_VERSION ||
-        !az_data_event_scalar_ready(e, &state->header, AZ_STATUS_PHRASE_TRANSITION_ACTIVE, &state->active_info) ||
-        state->active_info.scope != AZ_STATUS_LOAD_SCOPE || !state->active ||
-        !az_data_phrase_endpoint_valid(&t->from, e->load_epoch) || !az_data_phrase_endpoint_valid(&t->to, e->load_epoch) ||
-        !az_data_phrase_map_equal(&t->from, &t->to) || (t->from.kind == t->to.kind && t->from.index == t->to.index) ||
-        !az_data_phrase_endpoint_equal(&t->to, state->active)) return 0;
+    if (!az_data_phrase_transition_valid(e, t, state)) return 0;
     uint32_t capacity = out->size;
     *out = *t;
     out->size = capacity;

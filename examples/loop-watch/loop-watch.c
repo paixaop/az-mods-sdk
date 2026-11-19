@@ -11,6 +11,11 @@ static struct loop_display {
     int has_in, has_out, engaged;
 } decks[4];
 
+static int loop_has_state(const struct loop_display *state)
+{
+    return state->has_in || state->has_out || state->engaged == 1;
+}
+
 static void loop_changed(const az_deck_status_event_v1 *e, void *user)
 {
     const az_status_loop_v1 *loop;
@@ -23,8 +28,7 @@ static void loop_changed(const az_deck_status_event_v1 *e, void *user)
     next.has_out = az_read_event_loop_point(e, AZ_STATUS_LOOP_RETAINED_OUT, &next.out_s);
     /* Ignore routine empty-load baselines. Always log an edit, an exit or a
      * recovery with the exact callback sequence, including a retained IN at 0. */
-    if (next.has_in || next.has_out || next.engaged == 1 || state->has_in || state->has_out ||
-        state->engaged == 1 || e->kind == AZ_STATUS_RESYNC) {
+    if (loop_has_state(&next) || loop_has_state(state) || e->kind == AZ_STATUS_RESYNC) {
         double working_in = 0, working_out = 0;
         int has_working_in = az_read_event_loop_point(e, AZ_STATUS_LOOP_WORKING_IN, &working_in);
         int has_working_out = az_read_event_loop_point(e, AZ_STATUS_LOOP_WORKING_OUT, &working_out);

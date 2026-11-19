@@ -38,14 +38,18 @@ static inline int probe_log_pop(struct probe_log_queue *q, char bytes[PROBE_LOG_
     return 1;
 }
 /* Notification validity is separate from synchronous call status/ownership. */
+static inline int probe_completion_outcome_valid(const az_command_completion *c)
+{
+    return c->result.outcome != AZ_COMMAND_ACCEPTED &&
+           (c->result.outcome == AZ_COMMAND_UNCERTAIN || c->settled == 1) &&
+           (c->result.outcome != AZ_COMMAND_APPLIED ||
+            (c->result.reason == AZ_OK && c->result.revision && c->result.observed_ns));
+}
 static inline int probe_completion_valid(const az_command_completion *c, uint64_t id)
 {
     return az_data_covers(c, sizeof *c) && c->version == AZ_DATA_VERSION && c->settled <= 1 &&
            (c->kind == AZ_COMMAND_COMPLETION_TERMINAL || c->kind == AZ_COMMAND_COMPLETION_RELEASED) &&
-           az_command_result_matches(&c->result, id) && c->result.outcome != AZ_COMMAND_ACCEPTED &&
-           (c->result.outcome == AZ_COMMAND_UNCERTAIN || c->settled == 1) &&
-           (c->result.outcome != AZ_COMMAND_APPLIED ||
-            (c->result.reason == AZ_OK && c->result.revision && c->result.observed_ns));
+           az_command_result_matches(&c->result, id) && probe_completion_outcome_valid(c);
 }
 static inline int probe_terminal_equal(const az_command_result *a, const az_command_result *b)
 {

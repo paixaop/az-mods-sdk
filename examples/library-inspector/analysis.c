@@ -14,17 +14,8 @@ static char lines[8][112];
 static uint8_t preview[64];
 static unsigned preview_count;
 static int detail_ready;
-static void draw(az_draw *d, az_rect area, void *user)
+static void draw_preview(az_draw *d, az_rect area, int y, uint32_t color)
 {
-    (void)user;
-    if (area.w < 32 || area.h < 32) return;
-    uint32_t color = core->color(AZ_COL_TEXT);
-    int y = area.y + 8;
-    /* Fixed short lines fit at the native screen size; tiny harness areas show status only. */
-    for (int i = 0; i < 8 && y + 24 < area.y + area.h; i++, y += 28) {
-        if (core->text_width(lines[i], 16) < area.w - 16)
-            core->draw_text(d, area.x + 8, y, lines[i], 16, color);
-    }
     int base = area.y + area.h - 16;
     int plot_height = base - y - 8;
     if (plot_height > 80) plot_height = 80;
@@ -38,6 +29,18 @@ static void draw(az_draw *d, az_rect area, void *user)
         }
     }
 }
+static void draw(az_draw *d, az_rect area, void *user)
+{
+    (void)user;
+    if (area.w < 32 || area.h < 32) return;
+    uint32_t color = core->color(AZ_COL_TEXT);
+    int y = area.y + 8;
+    for (int i = 0; i < 8 && y + 24 < area.y + area.h; i++, y += 28)
+        if (core->text_width(lines[i], 16) < area.w - 16)
+            core->draw_text(d, area.x + 8, y, lines[i], 16, color);
+    draw_preview(d, area, y, color);
+}
+
 static uint32_t first_track;
 static int pick(const az_track *track, void *user)
 {
@@ -45,29 +48,73 @@ static int pick(const az_track *track, void *user)
     first_track = track->id;
     return 1;
 }
+static void request_track(const az_track_ref *ref)
+{
+    uint64_t t = 0;
+    int rc;
+    do {
+        rc = library->track_request(ID, ref, 31, &t);
+        if (rc == AZ_BUSY) usleep(1000);
+    } while (rc == AZ_BUSY);
+    if (rc == AZ_OK) atomic_store_explicit(&ready_ticket, t, memory_order_release);
+}
+static void request_wave(const az_track_ref *ref)
+{
+    if (!AZ_LIB_HAS(library, waveform_request) || !AZ_LIB_HAS(library, waveform_acquire)) return;
+    az_wave_query query = { sizeof query, AZ_DATA_VERSION, AZ_WAVE_PWV3_MONO, 0, 4096, 0 };
+    uint64_t t = 0;
+    int rc;
+    do {
+        rc = library->waveform_request(ID, ref, &query, &t);
+        if (rc == AZ_BUSY) usleep(1000);
+    } while (rc == AZ_BUSY);
+    if (rc == AZ_OK) atomic_store_explicit(&ready_wave, t, memory_order_release);
+}
 static void *load(void *arg)
 {
     (void)arg;
     if (library->lib_tracks(ID, 0, 0, pick, NULL) < 0 || !first_track) return NULL;
-    az_track_ref ref = { 0 };
-    ref.size = sizeof ref;
+    az_track_ref ref = { .size = sizeof ref };
     if (library->track_resolve(ID, 0, first_track, &ref) != AZ_OK) return NULL;
-    uint64_t t = 0;
-    int rc;
-    do {
-        rc = library->track_request(ID, &ref, 31, &t);
-        if (rc == AZ_BUSY) usleep(1000);
-    } while (rc == AZ_BUSY);
-    if (rc == AZ_OK) atomic_store_explicit(&ready_ticket, t, memory_order_release);
-    if (AZ_LIB_HAS(library, waveform_request) && AZ_LIB_HAS(library, waveform_acquire)) {
-        az_wave_query query = { sizeof query, AZ_DATA_VERSION, AZ_WAVE_PWV3_MONO, 0, 4096, 0 };
-        do {
-            rc = library->waveform_request(ID, &ref, &query, &t);
-            if (rc == AZ_BUSY) usleep(1000);
-        } while (rc == AZ_BUSY);
-        if (rc == AZ_OK) atomic_store_explicit(&ready_wave, t, memory_order_release);
-    }
+    request_track(&ref);
+    request_wave(&ref);
     return NULL;
+}
+static void preview_columns(const uint8_t *columns, uint32_t count, unsigned mask)
+{
+    preview_count = count < 64 ? count : 64;
+    for (unsigned i = 0; i < preview_count; i++) {
+        uint32_t a = i * count / preview_count, b = (i + 1) * count / preview_count;
+        uint8_t peak = 0;
+        for (uint32_t j = a; j < b; j++)
+            if ((columns[j] & mask) > peak) peak = columns[j] & mask;
+        preview[i] = (uint8_t)(peak * 255u / mask);
+    }
+}
+static void format_timing(const az_track_snapshot *s)
+{
+    if (AZ_LIB_HAS(library, time_to_beat)) {
+        double beat;
+        int timing = library->time_to_beat(s, .25, &beat);
+        if (timing == AZ_OK) snprintf(lines[7], sizeof lines[7], "At 0.25 source seconds: beat %.3f", beat);
+    }
+}
+static void format_track(const az_track_snapshot *s)
+{
+    snprintf(lines[1], sizeof lines[1], "%.80s", s->metadata.title);
+    snprintf(lines[2], sizeof lines[2], "%u beats, %u phrases", s->beat_count, s->phrase_count);
+    snprintf(lines[3], sizeof lines[3], "Grid availability %u, phrases %u", s->grid_info.availability, s->phrases_info.availability);
+    if (!detail_ready) snprintf(lines[4], sizeof lines[4], "Wave: %u samples, %.6f seconds/sample", s->waveform.sample_count, s->waveform.seconds_per_sample);
+    if (s->phrase_count) snprintf(lines[5], sizeof lines[5], "Raw phrase kind %u, mood %u", s->phrases[0].raw_kind, s->phrases[0].raw_mood);
+    if (s->waveform.sample_count) snprintf(lines[6], sizeof lines[6], "First raw overview height %u", s->waveform.samples[0]);
+    format_timing(s);
+    if (!detail_ready) {
+        preview_count = 0;
+        if (s->waveform.sample_count && s->waveform.samples) {
+            preview_columns(s->waveform.samples, s->waveform.sample_count, 255);
+            snprintf(lines[6], sizeof lines[6], "Overview chart: raw PWAV byte values");
+        }
+    }
 }
 static void tick_track(void)
 {
@@ -83,32 +130,7 @@ static void tick_track(void)
         if (library->track_release(ID, ticket) == AZ_OK) ticket = 0;
         return;
     }
-    snprintf(lines[1], sizeof lines[1], "%.80s", s->metadata.title);
-    snprintf(lines[2], sizeof lines[2], "%u beats, %u phrases", s->beat_count, s->phrase_count);
-    snprintf(lines[3], sizeof lines[3], "Grid availability %u, phrases %u", s->grid_info.availability, s->phrases_info.availability);
-    if (!detail_ready) snprintf(lines[4], sizeof lines[4], "Wave: %u samples, %.6f seconds/sample", s->waveform.sample_count, s->waveform.seconds_per_sample);
-    if (s->phrase_count) snprintf(lines[5], sizeof lines[5], "Raw phrase kind %u, mood %u", s->phrases[0].raw_kind, s->phrases[0].raw_mood);
-    if (s->waveform.sample_count) snprintf(lines[6], sizeof lines[6], "First raw overview height %u", s->waveform.samples[0]);
-    if (AZ_LIB_HAS(library, time_to_beat)) {
-        double beat;
-        int timing = library->time_to_beat(s, .25, &beat);
-        if (timing == AZ_OK) snprintf(lines[7], sizeof lines[7], "At 0.25 source seconds: beat %.3f", beat);
-    }
-    if (!detail_ready) {
-        preview_count = 0;
-        if (s->waveform.sample_count && s->waveform.samples) {
-            preview_count = s->waveform.sample_count < 64 ? s->waveform.sample_count : 64;
-            for (unsigned i = 0; i < preview_count; i++) {
-                uint32_t a = i * s->waveform.sample_count / preview_count;
-                uint32_t b = (i + 1) * s->waveform.sample_count / preview_count;
-                uint8_t peak = 0;
-                for (uint32_t j = a; j < b; j++)
-                    if (s->waveform.samples[j] > peak) peak = s->waveform.samples[j];
-                preview[i] = peak;
-            }
-            snprintf(lines[6], sizeof lines[6], "Overview chart: raw PWAV byte values");
-        }
-    }
+    format_track(s);
     /* Copy into owned display text, then release the immutable snapshot. */
     if (library->track_release(ID, ticket) == AZ_OK) ticket = 0;
 }
@@ -123,15 +145,7 @@ static void tick(void)
     if (rc == AZ_OK) {
         detail_ready = 1;
         snprintf(lines[4], sizeof lines[4], "Detail: %u/%u columns, %.6f source seconds/column", w->column_count, w->total_columns, w->seconds_per_column);
-        preview_count = w->column_count < 64 ? w->column_count : 64;
-        for (unsigned i = 0; i < preview_count; i++) {
-            uint32_t a = i * w->column_count / preview_count;
-            uint32_t b = (i + 1) * w->column_count / preview_count;
-            uint8_t peak = 0;
-            for (uint32_t j = a; j < b; j++)
-                if ((w->columns[j] & 31) > peak) peak = w->columns[j] & 31;
-            preview[i] = (uint8_t)(peak * 255u / 31u);
-        }
+        preview_columns(w->columns, w->column_count, 31);
         snprintf(lines[6], sizeof lines[6], "Detail chart: PWV3 height, first %.2f source seconds", w->column_count * w->seconds_per_column);
     } else snprintf(lines[4], sizeof lines[4], "Detailed waveform unavailable (status %d)", rc);
     if (library->track_release(ID, wave_ticket) == AZ_OK) wave_ticket = 0;

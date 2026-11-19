@@ -63,45 +63,54 @@ static int covers(const void *ptr, size_t size)
     const az_status_topic_v1 *h = ptr;
     return h->version == AZ_DATA_VERSION;
 }
-static void changed(const az_deck_status_event_v1 *e, void *user)
+static const char *playback_name(const az_status_transport_v1 *tr)
 {
-    (void)user;
-    if (!az_data_covers(e, offsetof(az_deck_status_event_v1, view) + sizeof e->view) ||
-        e->version != AZ_DATA_VERSION || e->deck >= 4) return;
-    char (*out)[6][116] = lines[e->deck];
-    memset(out, 0, sizeof lines[e->deck]);
-    snprintf(out[LIVE_STATUS][0], 116, "Load %" PRIu64 " / seq %" PRIu64 "%s", e->load_epoch, e->sequence, e->kind == AZ_STATUS_RESYNC ? " / resync" : "");
-    if (!az_data_covers(e->view, sizeof *e->view) || e->view->version != AZ_DATA_VERSION) return;
-    const az_deck_status_view_v1 *v = e->view;
+    const char *play = availability(tr->state_info.info.availability);
+    if (tr->state_info.info.availability == AZ_AVAIL_READY) {
+        switch (tr->state) {
+        case AZ_PLAYBACK_PAUSED: play = "paused"; break;
+        case AZ_PLAYBACK_PLAYING: play = "playing"; break;
+        case AZ_PLAYBACK_CUEING: play = "cueing"; break;
+        case AZ_PLAYBACK_STOPPED: play = "stopped"; break;
+        case AZ_PLAYBACK_ENDED: play = "ended"; break;
+        }
+    }
+    return play;
+}
+static void format_metadata(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->metadata, sizeof *v->metadata)) {
         const az_status_metadata_v1 *m = v->metadata;
         snprintf(out[LIVE_STATUS][1], 116, "Track %.98s", m->title_info.info.availability == AZ_AVAIL_READY && m->title ? m->title : availability(m->title_info.info.availability));
     }
+}
+static void format_position(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->position, sizeof *v->position)) {
         char head[32], remaining[32];
         snprintf(out[LIVE_STATUS][2], 116, "Head %s / remaining %s s", number(head, &v->position->head.seconds, &v->position->head_info),
                  number(remaining, &v->position->remaining_s, &v->position->remaining_s_info));
     }
+}
+static void format_transport(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->transport, sizeof *v->transport) && covers(v->sync, sizeof *v->sync)) {
         const az_status_transport_v1 *tr = v->transport;
-        const char *play = availability(tr->state_info.info.availability);
-        if (tr->state_info.info.availability == AZ_AVAIL_READY) {
-            switch (tr->state) {
-            case AZ_PLAYBACK_PAUSED: play = "paused"; break;
-            case AZ_PLAYBACK_PLAYING: play = "playing"; break;
-            case AZ_PLAYBACK_CUEING: play = "cueing"; break;
-            case AZ_PLAYBACK_STOPPED: play = "stopped"; break;
-            case AZ_PLAYBACK_ENDED: play = "ended"; break;
-            }
-        }
+        const char *play = playback_name(tr);
         const az_status_sync_v1 *sync = v->sync;
         snprintf(out[LIVE_STATUS][3], 116, "Transport %s / Sync %s", play, sync->enabled_info.info.availability == AZ_AVAIL_READY ? (sync->enabled ? "on" : "off") : availability(sync->enabled_info.info.availability));
     }
+}
+static void format_tempo(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->tempo, sizeof *v->tempo) && covers(v->key, sizeof *v->key)) {
         char bpm[32];
         snprintf(out[LIVE_STATUS][4], 116, "BPM %s / original key %.31s", number(bpm, &v->tempo->current_bpm, &v->tempo->current_bpm_info),
                  v->key->original_info.info.availability == AZ_AVAIL_READY && v->key->original ? v->key->original : availability(v->key->original_info.info.availability));
     }
+}
+static void format_loop(const az_deck_status_event_v1 *e, char out[LIVE_PAGES][6][116])
+{
     const az_status_loop_v1 *loop;
     if (az_read_event_loop(e, &loop)) {
         int on;
@@ -113,6 +122,9 @@ static void changed(const az_deck_status_event_v1 *e, void *user)
         if (az_read_event_loop_point(e, AZ_STATUS_LOOP_RETAINED_OUT, &point)) snprintf(out[LIVE_CUES][2], 116, "Retained OUT %.6f s", point);
         else snprintf(out[LIVE_CUES][2], 116, "Retained OUT %s", availability(loop->retained_out_info.info.availability));
     }
+}
+static void format_cues(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->cues, sizeof *v->cues)) {
         const az_status_cues_v1 *c = v->cues;
         snprintf(out[LIVE_CUES][3], 116, "Live hot %s (%u), memory %s (%u)", availability(c->live_hot_info.info.availability), c->live_hot_info.count,
@@ -126,6 +138,9 @@ static void changed(const az_deck_status_event_v1 *e, void *user)
                          first->valid & AZ_CUE_COMMENT ? first->comment : "");
         }
     }
+}
+static void format_grid(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->grid, sizeof *v->grid) && covers(v->phrases, sizeof *v->phrases)) {
         const az_status_grid_v1 *g = v->grid;
         const az_status_phrases_v1 *p = v->phrases;
@@ -138,11 +153,17 @@ static void changed(const az_deck_status_event_v1 *e, void *user)
         snprintf(out[LIVE_ANALYSIS][2], 116, "Saved grid %s (%u), phrases %s (%u)", availability(g->saved_info.info.availability), g->saved_info.count,
                  availability(p->saved_info.info.availability), p->saved_info.count);
     }
+}
+static void format_overview(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->overview, sizeof *v->overview)) {
         const az_status_overview_v1 *o = v->overview;
         snprintf(out[LIVE_ANALYSIS][3], 116, "Stored overview %s (%u samples)", availability(o->saved_info.info.availability),
                  o->saved_info.info.availability == AZ_AVAIL_READY && az_data_covers(o->saved, sizeof *o->saved) ? o->saved->sample_count : 0);
     }
+}
+static void format_phrase(const az_deck_status_view_v1 *v, char out[LIVE_PAGES][6][116])
+{
     if (covers(v->phrase_playback, sizeof *v->phrase_playback)) {
         const az_status_phrase_playback_v1 *pp = v->phrase_playback;
         if (pp->active_info.info.availability == AZ_AVAIL_READY && pp->active) {
@@ -151,6 +172,26 @@ static void changed(const az_deck_status_event_v1 *e, void *user)
                                                                                                                                                      : "GAP");
         } else snprintf(out[LIVE_ANALYSIS][4], 116, "Active phrase %s", availability(pp->active_info.info.availability));
     }
+}
+static void changed(const az_deck_status_event_v1 *e, void *user)
+{
+    (void)user;
+    if (!az_data_covers(e, offsetof(az_deck_status_event_v1, view) + sizeof e->view) ||
+        e->version != AZ_DATA_VERSION || e->deck >= 4) return;
+    char (*out)[6][116] = lines[e->deck];
+    memset(out, 0, sizeof lines[e->deck]);
+    snprintf(out[LIVE_STATUS][0], 116, "Load %" PRIu64 " / seq %" PRIu64 "%s", e->load_epoch, e->sequence, e->kind == AZ_STATUS_RESYNC ? " / resync" : "");
+    if (!az_data_covers(e->view, sizeof *e->view) || e->view->version != AZ_DATA_VERSION) return;
+    const az_deck_status_view_v1 *v = e->view;
+    format_metadata(v, out);
+    format_position(v, out);
+    format_transport(v, out);
+    format_tempo(v, out);
+    format_loop(e, out);
+    format_cues(v, out);
+    format_grid(v, out);
+    format_overview(v, out);
+    format_phrase(v, out);
 }
 static int init(const az_core_v1 *c)
 {

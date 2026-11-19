@@ -1,7 +1,7 @@
 # Mod Menu keys
 
-Every official Mod Menu setting has a key: its name in the settings file on the USB,
-`MODS/azmods.cfg`, which is also the name your mod passes to `row_lookup()` to read it.
+Every official Mod Menu setting has a key: its name in the deck settings file,
+`/home/root/settings/azmod.conf`, which is also the name your mod passes to `row_lookup()` to read it.
 Keys are a stable interface: a key is never renamed or reused, and a removed setting keeps
 its key reserved.
 
@@ -32,12 +32,16 @@ static int smooth_waveforms(void)
 |---|---|---|---|---|
 | `stems` | Stems | toggle | - | 0 = off, 1 = on |
 | `stem-pads-page` | Stems on BEAT LOOP 2 | choice | stems | 0 = "BEAT LOOP", 1 = "BEAT LOOP 2" |
+| `stem-pads-fx` | Bottom Stem Pads | choice | stems | 0 = "Solo", 1 = "FX" |
+| `stem-fx-echo-length` | Echo Length | choice | stem-pads-fx | 0 = "-1", 1 = "-3/4", 2 = "-1/2", 3 = "-1/4", 4 = "1/4", 5 = "1/2", 6 = "3/4", 7 = "1" |
+| `stem-fx-brake-length` | Brake Length | choice | stem-pads-fx | 0 = "1/2", 1 = "1", 2 = "2", 3 = "4" |
 | `remote-stems` | Remote Stems | toggle | stems | 0 = off, 1 = on |
 | `stem-marks` | Stem Marks | toggle | stems | 0 = off, 1 = on |
 | `stem-mark-style` | Stem Mark Style | choice | stem-marks | 0 = "Color", 1 = "Mono" |
 | `stem-volume-eq` | Stem Volume on CH 3/4 EQ | toggle | stems | 0 = off, 1 = on |
 | `drum-roll` | Drum Roll | toggle | - | 0 = off, 1 = on |
 | `drum-roll-bank` | Bank | choice | drum-roll | 0 = "1", 1 = "2", 2 = "3", 3 = "4" |
+| `drum-roll-paused-deck` | Paused Deck | choice | drum-roll | 0 = "Master", 1 = "Own Track" |
 | `fps60-waveforms` | 60 FPS Waveforms | toggle | fps60 | 0 = off, 1 = on |
 | `fps60-ui` | 60 FPS UI | toggle | fps60 | 0 = off, 1 = on |
 | `playlist-editing` | Playlist Editing | toggle | - | 0 = off, 1 = on |
@@ -51,6 +55,7 @@ static int smooth_waveforms(void)
 | `overlay-ram` | RAM Usage | toggle | overlays | 0 = off, 1 = on |
 | `overlay-clock` | Clock | toggle | extras | 0 = off, 1 = on |
 | `overlay-clock-24h` | Time Format | choice | overlay-clock | 0 = "12-hour", 1 = "24-hour" |
+| `overlay-clock-seconds` | Show Seconds | toggle | overlay-clock | 0 = off, 1 = on |
 | `column-edit` | Column Edit | toggle | browse-view | 0 = off, 1 = on |
 | `preview-hot-cues` | Preview Hot Cues | toggle | browse-view | 0 = off, 1 = on |
 | `beat-jump-2-first` | BEAT JUMP 2 First | toggle | extras | 0 = off, 1 = on |
@@ -58,7 +63,14 @@ static int smooth_waveforms(void)
 | `bt-auto-connect` | Bluetooth Auto-Connect | toggle | extras | 0 = off, 1 = on |
 | `bt-remember-channel` | Remember Selected Channel | toggle | extras | 0 = off, 1 = on |
 | `hide-track-title` | Hide Track Title | toggle | extras | 0 = off, 1 = on |
+| `deck-key-title` | Key in Track Title | toggle | extras | 0 = off, 1 = on |
+| `vocal-indicator` | Vocal Indicator | toggle | extras | 0 = off, 1 = on |
+| `vocal-indicator-waveform` | Above Waveform | toggle | vocal-indicator | 0 = off, 1 = on |
+| `vocal-indicator-preview` | Above Preview | toggle | vocal-indicator | 0 = off, 1 = on |
 | `phase-meter` | Phase Meter | toggle | extras | 0 = off, 1 = on |
+| `compact-track-info` | Compact Track Info | toggle | extras | 0 = off, 1 = on |
+| `deck-order-4deck` | 4 DECK Order 1 2 3 4 | toggle | extras | 0 = off, 1 = on |
 | `extended-lead-in` | Extended Lead-In | toggle | extras | 0 = off, 1 = on |
 | `camelot-keys` | Camelot Keys | toggle | extras | 0 = off, 1 = on |
+| `remember-waveform-zoom` | Remember Waveform Zoom | toggle | extras | 0 = off, 1 = on |
 <!-- keys:end -->

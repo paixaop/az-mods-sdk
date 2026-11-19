@@ -85,11 +85,8 @@ static int hs_code_segment(struct dl_phdr_info *image, size_t size, void *contex
     return 0;
 }
 #endif
-static int hs_mod_code(void *pointer)
+static int hs_executable_address(uintptr_t address)
 {
-    Dl_info image;
-    if (!pointer || !mod_base || !dladdr(pointer, &image) || image.dli_fbase != mod_base) return 0;
-    uintptr_t address = (uintptr_t)pointer;
 #ifdef __APPLE__
     mach_vm_address_t start = address;
     mach_vm_size_t length = 0;
@@ -104,30 +101,45 @@ static int hs_mod_code(void *pointer)
     return dl_iterate_phdr(hs_code_segment, &address);
 #endif
 }
+static int hs_mod_code(void *pointer)
+{
+    Dl_info image;
+    if (!pointer || !mod_base || !dladdr(pointer, &image) || image.dli_fbase != mod_base) return 0;
+    return hs_executable_address((uintptr_t)pointer);
+}
+
 static int hs_owner(const char *id, void *caller)
 {
     return pthread_equal(pthread_self(), hs_ui) && ctx != CTX_NONE && id && mod_id && !strcmp(id, mod_id) &&
            hs_mod_code(caller);
 }
+static int hs_watch_valid(const az_deck_watch_v1 *w)
+{
+    return w && ht_record_size(w) >= sizeof *w && w->version == AZ_DATA_VERSION &&
+           w->deck_mask && !(w->deck_mask & ~AZ_STATUS_ALL_DECKS) && w->topics &&
+           !(w->topics & ~AZ_STATUS_ALL_V1) && w->position_hz <= 30;
+}
+static void hs_listener_start(struct hs_listener *s, const az_deck_watch_v1 *w, az_deck_status_fn fn, void *user)
+{
+    memset(s, 0, sizeof *s);
+    s->watch = *w;
+    s->fn = fn;
+    s->user = user;
+    s->initial = w->deck_mask;
+    for (unsigned d = 0; d < 4; ++d) {
+        s->baseline[d] = hs_decks[d].current;
+        s->after[d] = s->baseline[d].sequence;
+        s->discrete[d] = hs_decks[d].discrete;
+    }
+}
 static __attribute__((noinline)) int hs_subscribe(const char *id, const az_deck_watch_v1 *w, az_deck_status_fn fn, void *user, az_deck_subscription *out)
 {
-    if (!hs_owner(id, __builtin_return_address(0)) || !w || ht_record_size(w) < sizeof *w ||
-        w->version != AZ_DATA_VERSION || !w->deck_mask || (w->deck_mask & ~AZ_STATUS_ALL_DECKS) ||
-        !w->topics || (w->topics & ~AZ_STATUS_ALL_V1) || w->position_hz > 30 || !out || !fn ||
+    if (!hs_owner(id, __builtin_return_address(0)) || !hs_watch_valid(w) || !out || !fn ||
         !hs_mod_code((void *)fn)) return AZ_INVALID;
     for (unsigned i = 0; i < 4 && hs_next_handle != UINT64_MAX; ++i) {
         struct hs_listener *s = &hs_listeners[i];
         if (s->handle) continue;
-        memset(s, 0, sizeof *s);
-        s->watch = *w;
-        s->fn = fn;
-        s->user = user;
-        s->initial = w->deck_mask;
-        for (unsigned d = 0; d < 4; ++d) {
-            s->baseline[d] = hs_decks[d].current;
-            s->after[d] = s->baseline[d].sequence;
-            s->discrete[d] = hs_decks[d].discrete;
-        }
+        hs_listener_start(s, w, fn, user);
         *out = s->handle = ++hs_next_handle;
         return AZ_OK;
     }
@@ -143,6 +155,12 @@ static __attribute__((noinline)) int hs_release(const char *id, az_deck_subscrip
         }
     }
     return AZ_STALE;
+}
+static void hs_event_occurrences(az_deck_status_event_v1 *e, const struct hs_record *copy)
+{
+    if (copy->occurrence.size && (e->topics & (AZ_STATUS_TOPIC(AZ_STATUS_TRANSPORT) | AZ_STATUS_TOPIC(AZ_STATUS_POSITION))))
+        e->occurrence = &copy->occurrence;
+    if (copy->pair.size && (e->topics & AZ_STATUS_TOPIC(AZ_STATUS_PHRASE_TRANSITION))) e->phrase_transition = &copy->pair;
 }
 static void hs_deliver(const struct hs_record *source, unsigned d, uint32_t kind, uint64_t lost, uint32_t reason, struct hs_listener *s)
 {
@@ -164,11 +182,7 @@ static void hs_deliver(const struct hs_record *source, unsigned d, uint32_t kind
 #undef HS_SELECT
     if (copy.image.metadata.title_info.info.availability == AZ_AVAIL_READY) copy.image.metadata.title = copy.title;
     if (copy.image.phrase_playback.active_info.info.availability == AZ_AVAIL_READY) copy.image.phrase_playback.active = &copy.active;
-    if (kind == AZ_STATUS_CHANGE) {
-        if (copy.occurrence.size && (e.topics & (AZ_STATUS_TOPIC(AZ_STATUS_TRANSPORT) | AZ_STATUS_TOPIC(AZ_STATUS_POSITION))))
-            e.occurrence = &copy.occurrence;
-        if (copy.pair.size && (e.topics & AZ_STATUS_TOPIC(AZ_STATUS_PHRASE_TRANSITION))) e.phrase_transition = &copy.pair;
-    }
+    if (kind == AZ_STATUS_CHANGE) hs_event_occurrences(&e, &copy);
     int previous = ctx;
     ctx = CTX_UI;
     arm(1);
@@ -177,15 +191,8 @@ static void hs_deliver(const struct hs_record *source, unsigned d, uint32_t kind
     ctx = previous;
 }
 static void hs_cover_motion(struct hs_record *r, uint64_t after);
-/* The script may batch physical actions before the simulated UI runs. */
-static void hs_commit(unsigned d, struct hs_record *next)
+static void hs_evict_motion(unsigned d, const struct hs_record *slot)
 {
-    struct hs_record *current = &hs_decks[d].current;
-    if (current->sequence == UINT64_MAX) abort();
-    next->sequence = current->sequence + 1;
-    next->observed = (uint64_t)mono_ns;
-    if (hs_decks[d].discrete == UINT64_MAX) abort();
-    struct hs_record *slot = &hs_decks[d].history[++hs_decks[d].discrete % HS_HISTORY];
     if (slot->motion_barrier) {
         for (unsigned i = 0; i < 4; ++i) {
             struct hs_listener *s = &hs_listeners[i];
@@ -196,6 +203,17 @@ static void hs_commit(unsigned d, struct hs_record *next)
                 (AZ_STATUS_TOPIC(AZ_STATUS_POSITION) | AZ_STATUS_TOPIC(AZ_STATUS_PHASE));
         }
     }
+}
+/* The script may batch physical actions before the simulated UI runs. */
+static void hs_commit(unsigned d, struct hs_record *next)
+{
+    struct hs_record *current = &hs_decks[d].current;
+    if (current->sequence == UINT64_MAX) abort();
+    next->sequence = current->sequence + 1;
+    next->observed = (uint64_t)mono_ns;
+    if (hs_decks[d].discrete == UINT64_MAX) abort();
+    struct hs_record *slot = &hs_decks[d].history[++hs_decks[d].discrete % HS_HISTORY];
+    hs_evict_motion(d, slot);
     for (unsigned t = 0; t < AZ_STATUS_TOPIC_COUNT; ++t)
         if (slot->topics & AZ_STATUS_TOPIC(t)) hs_decks[d].evicted[t] = slot->sequence;
     next->motion_barrier |= next->epoch != current->epoch || next->occurrence.size ||
@@ -214,6 +232,75 @@ static void hs_cover_motion(struct hs_record *r, uint64_t after)
     if (position->header.changed) r->topics |= AZ_STATUS_TOPIC(AZ_STATUS_POSITION);
     if (phase->header.changed) r->topics |= AZ_STATUS_TOPIC(AZ_STATUS_PHASE);
 }
+static uint64_t hs_listener_loss(struct hs_listener *s, unsigned d, uint64_t discrete)
+{
+    uint64_t loss = 0;
+    for (unsigned t = 0; t < AZ_STATUS_TOPIC_COUNT; ++t)
+        if (hs_decks[d].evicted[t] > s->after[d]) loss |= AZ_STATUS_TOPIC(t);
+    loss &= s->watch.topics;
+    loss |= s->evicted_motion[d];
+    if (discrete - s->discrete[d] > HS_HISTORY) s->discrete[d] = discrete - HS_HISTORY;
+    return loss;
+}
+static void hs_recover(struct hs_listener *s, unsigned d, uint64_t discrete, uint64_t loss)
+{
+    struct hs_record recovery = hs_decks[d].current;
+    uint64_t skipped = 0;
+    while (s->discrete[d] < discrete) {
+        const struct hs_record *r = &hs_decks[d].history[++s->discrete[d] % HS_HISTORY];
+        if (r->sequence <= s->after[d]) continue;
+        recovery = *r;
+        if (recovery.motion_barrier) hs_cover_motion(&recovery, s->after[d]);
+        skipped = recovery.topics & s->watch.topics;
+        break;
+    }
+    s->after[d] = recovery.sequence;
+    s->evicted_motion[d] = 0;
+    hs_deliver(&recovery, d, AZ_STATUS_RESYNC, loss | skipped, AZ_STATUS_EVICTED | (skipped ? AZ_STATUS_CUT_SKIPPED : 0), s);
+}
+static void hs_drain_discrete(struct hs_listener *s, uint64_t h, unsigned d, uint64_t discrete)
+{
+    while (h == s->handle && s->discrete[d] < discrete) {
+        struct hs_record r = hs_decks[d].history[++s->discrete[d] % HS_HISTORY];
+        if (r.sequence <= s->after[d]) continue;
+        if (r.motion_sequence > s->after[d] && (r.motion_barrier || (r.topics & s->watch.topics)))
+            hs_cover_motion(&r, s->after[d]);
+        if (!(r.topics & s->watch.topics)) continue;
+        s->after[d] = r.sequence;
+        hs_deliver(&r, d, AZ_STATUS_CHANGE, 0, 0, s);
+    }
+}
+static void hs_schedule_motion(uint64_t due)
+{
+    int earlier = compare_timestamps(due, hs_deadline, NS, NS, 1);
+    if (!hs_deadline || (earlier != AZ_TIME_INVALID && earlier == AZ_TIME_BEFORE)) hs_deadline = due;
+}
+static void hs_drain_motion(struct hs_listener *s, uint64_t h, unsigned d)
+{
+    const struct hs_record *motion = &hs_decks[d].motion;
+    if (h != s->handle || motion->sequence <= s->after[d]) return;
+    struct hs_record sample = *motion;
+    hs_cover_motion(&sample, s->after[d]);
+    if (!(sample.topics & s->watch.topics)) return;
+    int due = compare_timestamps(mono_ns, s->due[d], NS, NS, 1);
+    if (due == AZ_TIME_INVALID) return;
+    if (due == AZ_TIME_BEFORE) { hs_schedule_motion(s->due[d]); return; }
+    s->after[d] = sample.sequence;
+    hs_deliver(&sample, d, AZ_STATUS_CHANGE, 0, 0, s);
+}
+static void hs_drain_deck(struct hs_listener *s, uint64_t h, unsigned d)
+{
+    if (s->initial & (1u << d)) {
+        s->initial &= ~(1u << d);
+        hs_deliver(&s->baseline[d], d, AZ_STATUS_INITIAL, 0, 0, s);
+    }
+    uint64_t discrete = hs_decks[d].discrete;
+    uint64_t loss = hs_listener_loss(s, d, discrete);
+    if (h == s->handle && loss) hs_recover(s, d, discrete, loss);
+    if (h != s->handle) return;
+    hs_drain_discrete(s, h, d, discrete);
+    hs_drain_motion(s, h, d);
+}
 static void hs_drain(void)
 {
     if (hs_draining) return;
@@ -226,61 +313,12 @@ static void hs_drain(void)
         if (!h || h > admitted) continue;
         for (unsigned d = 0; d < 4 && h == s->handle; ++d) {
             if (!(s->watch.deck_mask & (1u << d))) continue;
-            if (s->initial & (1u << d)) {
-                s->initial &= ~(1u << d);
-                hs_deliver(&s->baseline[d], d, AZ_STATUS_INITIAL, 0, 0, s);
-            }
-            const struct hs_record *last = &hs_decks[d].current;
-            uint64_t loss = 0;
-            for (unsigned t = 0; t < AZ_STATUS_TOPIC_COUNT; ++t)
-                if (hs_decks[d].evicted[t] > s->after[d]) loss |= AZ_STATUS_TOPIC(t);
-            loss &= s->watch.topics;
-            loss |= s->evicted_motion[d];
-            uint64_t discrete = hs_decks[d].discrete;
-            if (discrete - s->discrete[d] > HS_HISTORY) s->discrete[d] = discrete - HS_HISTORY;
-            if (h == s->handle && loss) {
-                struct hs_record recovery = *last;
-                uint64_t skipped = 0;
-                while (s->discrete[d] < discrete) {
-                    const struct hs_record *r = &hs_decks[d].history[++s->discrete[d] % HS_HISTORY];
-                    if (r->sequence <= s->after[d]) continue;
-                    recovery = *r;
-                    if (recovery.motion_barrier) hs_cover_motion(&recovery, s->after[d]);
-                    skipped = recovery.topics & s->watch.topics;
-                    break;
-                }
-                s->after[d] = recovery.sequence;
-                s->evicted_motion[d] = 0;
-                hs_deliver(&recovery, d, AZ_STATUS_RESYNC, loss | skipped, AZ_STATUS_EVICTED | (skipped ? AZ_STATUS_CUT_SKIPPED : 0), s);
-            }
-            if (h != s->handle) break;
-            while (h == s->handle && s->discrete[d] < discrete) {
-                struct hs_record r = hs_decks[d].history[++s->discrete[d] % HS_HISTORY];
-                if (r.sequence <= s->after[d]) continue;
-                if (r.motion_sequence > s->after[d] && (r.motion_barrier || (r.topics & s->watch.topics)))
-                    hs_cover_motion(&r, s->after[d]);
-                if (!(r.topics & s->watch.topics)) continue;
-                s->after[d] = r.sequence;
-                hs_deliver(&r, d, AZ_STATUS_CHANGE, 0, 0, s);
-            }
-            const struct hs_record *motion = &hs_decks[d].motion;
-            if (h != s->handle || motion->sequence <= s->after[d]) continue;
-            struct hs_record sample = *motion;
-            hs_cover_motion(&sample, s->after[d]);
-            if (!(sample.topics & s->watch.topics)) continue;
-            int due = compare_timestamps(mono_ns, s->due[d], NS, NS, 1);
-            if (due == AZ_TIME_INVALID) continue;
-            if (due == AZ_TIME_BEFORE) {
-                int earlier = compare_timestamps(s->due[d], hs_deadline, NS, NS, 1);
-                if (!hs_deadline || (earlier != AZ_TIME_INVALID && earlier == AZ_TIME_BEFORE)) hs_deadline = s->due[d];
-                continue;
-            }
-            s->after[d] = sample.sequence;
-            hs_deliver(&sample, d, AZ_STATUS_CHANGE, 0, 0, s);
+            hs_drain_deck(s, h, d);
         }
     }
     hs_draining = 0;
 }
+
 static void hs_advance(void)
 {
     if (!hs_deadline) return;
@@ -317,6 +355,27 @@ static void hs_field(struct hs_record *r, unsigned d, unsigned topic, az_status_
 #define HS_SET(r, d, topic, member, field, selector, status, scope, count)                           \
     hs_field((r), (d), AZ_STATUS_##topic, &(r)->image.member.header, AZ_STATUS_##topic##_##selector, \
              &(r)->image.member.field##_info, (status), (scope), (count))
+static void hs_motion_phase(unsigned d, struct hs_record *r, uint32_t source_rate)
+{
+    const az_status_position_v1 *p = &r->image.position;
+    double beat;
+    if (ht_time_to_beat_rate(&(az_track_snapshot){ .size = sizeof(az_track_snapshot), .version = AZ_DATA_VERSION, .grid_info = { .availability = AZ_AVAIL_READY }, .beat_count = r->image.grid.current_info.count, .beats = r->image.grid.current }, p->head.seconds, &beat, (uint32_t)source_rate) == AZ_OK) {
+        double phase = beat - floor(beat);
+        if (r->image.phase.beat_info.info.availability != AZ_AVAIL_READY || r->image.phase.beat != phase) {
+            r->image.phase.beat = phase;
+            HS_SET(r, d, PHASE, phase, beat, BEAT, AZ_AVAIL_READY, AZ_STATUS_LOAD_SCOPE, 1);
+            r->image.phase.beat_info.info.provenance = AZ_PROV_DERIVED;
+        }
+    } else if (r->image.phase.beat_info.info.availability == AZ_AVAIL_READY) {
+        HS_SET(r, d, PHASE, phase, beat, BEAT, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
+    }
+}
+static int hs_motion_at(const az_status_position_v1 *p, int64_t frame, uint64_t source_rate)
+{
+    if (p->head_info.info.availability != AZ_AVAIL_READY || p->head.rate_hz != source_rate) return 0;
+    int order = compare_timestamps(p->head.samples, frame, source_rate, source_rate, 1);
+    return order != AZ_TIME_INVALID && order == AZ_TIME_EQUAL;
+}
 static void hs_motion(unsigned d, int64_t frame)
 {
     struct hs_record r = hs_next(d);
@@ -324,26 +383,13 @@ static void hs_motion(unsigned d, int64_t frame)
     int extent = compare_timestamps(frame, 4 * source_rate, source_rate, source_rate, 1);
     if (!r.epoch || extent == AZ_TIME_INVALID || extent == AZ_TIME_AFTER) return;
     az_status_position_v1 *p = &r.image.position;
-    if (p->head_info.info.availability == AZ_AVAIL_READY && p->head.rate_hz == source_rate) {
-        int order = compare_timestamps(p->head.samples, frame, source_rate, source_rate, 1);
-        if (order != AZ_TIME_INVALID && order == AZ_TIME_EQUAL) return;
-    }
+    if (hs_motion_at(p, frame, source_rate)) return;
     p->head = (az_status_coord_v1){ (double)frame / source_rate, frame, (uint32_t)source_rate, 0 };
     p->remaining_s = r.image.metadata.duration_s - p->head.seconds;
     HS_SET(&r, d, POSITION, position, head, HEAD, AZ_AVAIL_READY, AZ_STATUS_LOAD_SCOPE, 1);
     HS_SET(&r, d, POSITION, position, remaining_s, REMAINING_S, AZ_AVAIL_READY, AZ_STATUS_LOAD_SCOPE, 1);
     p->remaining_s_info.info.provenance = AZ_PROV_DERIVED;
-    double beat;
-    if (ht_time_to_beat_rate(&(az_track_snapshot){ .size = sizeof(az_track_snapshot), .version = AZ_DATA_VERSION, .grid_info = { .availability = AZ_AVAIL_READY }, .beat_count = r.image.grid.current_info.count, .beats = r.image.grid.current }, p->head.seconds, &beat, (uint32_t)source_rate) == AZ_OK) {
-        double phase = beat - floor(beat);
-        if (r.image.phase.beat_info.info.availability != AZ_AVAIL_READY || r.image.phase.beat != phase) {
-            r.image.phase.beat = phase;
-            HS_SET(&r, d, PHASE, phase, beat, BEAT, AZ_AVAIL_READY, AZ_STATUS_LOAD_SCOPE, 1);
-            r.image.phase.beat_info.info.provenance = AZ_PROV_DERIVED;
-        }
-    } else if (r.image.phase.beat_info.info.availability == AZ_AVAIL_READY) {
-        HS_SET(&r, d, PHASE, phase, beat, BEAT, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
-    }
+    hs_motion_phase(d, &r, (uint32_t)source_rate);
     if (r.sequence == UINT64_MAX) abort();
     const struct hs_image *before = &hs_decks[d].current.image;
     r.motion_barrier = p->head_info.info.availability != before->position.head_info.info.availability ||
@@ -361,27 +407,12 @@ static void hs_motion(unsigned d, int64_t frame)
 /* A single immutable export with independently identified file/native revisions.
  * Changing the file fixture affects only subsequent publications. */
 static const az_waveform hs_wave = { sizeof hs_wave, AZ_DATA_VERSION, AZ_WAVE_PREVIEW, sizeof ht_wave, 0, 1.0, ht_wave };
-static void hs_track_fields(struct hs_record *r, unsigned d, int loaded)
+static void hs_track_analysis(struct hs_record *r, unsigned d, int loaded)
 {
     struct hs_image *v = &r->image;
     unsigned a = loaded ? AZ_AVAIL_READY : AZ_AVAIL_EMPTY;
     const uint32_t n = loaded ? 1 : 0;
     const uint32_t nb = loaded ? sizeof ht_beats / sizeof *ht_beats : 0;
-    snprintf(r->title, sizeof r->title, "Harness track / deck %u", d + 1);
-    v->load.track = (az_track_ref){ sizeof(az_track_ref), AZ_DATA_VERSION, 1, 1, 1, 100 + d, 0 };
-    v->load.source = AZ_STATUS_SOURCE_USB1;
-    HS_SET(r, d, LOAD, load, track, TRACK, a, AZ_STATUS_LOAD_SCOPE, n);
-    HS_SET(r, d, LOAD, load, source, SOURCE, a, AZ_STATUS_LOAD_SCOPE, n);
-    v->metadata.duration_s = 4.0;
-    HS_SET(r, d, METADATA, metadata, title, TITLE, a, AZ_STATUS_LOAD_SCOPE, n ? strlen(r->title) : 0);
-    HS_SET(r, d, METADATA, metadata, duration_s, DURATION_S, a, AZ_STATUS_LOAD_SCOPE, n);
-    v->cues.live_hot = v->cues.saved_hot = loaded ? &ht_cues[1] : NULL;
-    v->cues.live_memory = v->cues.saved_memory = loaded ? ht_cues : NULL;
-    HS_SET(r, d, CUES, cues, live_hot, LIVE_HOT, a, AZ_STATUS_LOAD_SCOPE, n);
-    HS_SET(r, d, CUES, cues, live_memory, LIVE_MEMORY, a, AZ_STATUS_LOAD_SCOPE, n);
-    HS_SET(r, d, CUES, cues, saved_hot, SAVED_HOT, a, AZ_STATUS_LOAD_SCOPE, n);
-    HS_SET(r, d, CUES, cues, saved_memory, SAVED_MEMORY, a, AZ_STATUS_LOAD_SCOPE, n);
-    v->cues.saved_hot_info.info.provenance = v->cues.saved_memory_info.info.provenance = AZ_PROV_FILE;
     v->grid.current = v->grid.saved = loaded ? ht_beats : NULL;
     HS_SET(r, d, GRID, grid, current, CURRENT, a, AZ_STATUS_LOAD_SCOPE, nb);
     HS_SET(r, d, GRID, grid, saved, SAVED, a, AZ_STATUS_LOAD_SCOPE, nb);
@@ -401,30 +432,57 @@ static void hs_track_fields(struct hs_record *r, unsigned d, int loaded)
     r->active = (az_status_phrase_endpoint_v1){ .kind = AZ_PHRASE_START, .phrase_provider_id = d + 1, .phrase_revision = v->phrases.current_info.info.revision, .grid = v->phrases.current_grid };
     HS_SET(r, d, PHRASE_TRANSITION, phrase_playback, active, ACTIVE, a, AZ_STATUS_LOAD_SCOPE, n);
 }
+static void hs_track_fields(struct hs_record *r, unsigned d, int loaded)
+{
+    struct hs_image *v = &r->image;
+    unsigned a = loaded ? AZ_AVAIL_READY : AZ_AVAIL_EMPTY;
+    const uint32_t n = loaded ? 1 : 0;
+    snprintf(r->title, sizeof r->title, "Harness track / deck %u", d + 1);
+    v->load.track = (az_track_ref){ sizeof(az_track_ref), AZ_DATA_VERSION, 1, 1, 1, 100 + d, 0 };
+    v->load.source = AZ_STATUS_SOURCE_USB1;
+    HS_SET(r, d, LOAD, load, track, TRACK, a, AZ_STATUS_LOAD_SCOPE, n);
+    HS_SET(r, d, LOAD, load, source, SOURCE, a, AZ_STATUS_LOAD_SCOPE, n);
+    v->metadata.duration_s = 4.0;
+    HS_SET(r, d, METADATA, metadata, title, TITLE, a, AZ_STATUS_LOAD_SCOPE, n ? strlen(r->title) : 0);
+    HS_SET(r, d, METADATA, metadata, duration_s, DURATION_S, a, AZ_STATUS_LOAD_SCOPE, n);
+    v->cues.live_hot = v->cues.saved_hot = loaded ? &ht_cues[1] : NULL;
+    v->cues.live_memory = v->cues.saved_memory = loaded ? ht_cues : NULL;
+    HS_SET(r, d, CUES, cues, live_hot, LIVE_HOT, a, AZ_STATUS_LOAD_SCOPE, n);
+    HS_SET(r, d, CUES, cues, live_memory, LIVE_MEMORY, a, AZ_STATUS_LOAD_SCOPE, n);
+    HS_SET(r, d, CUES, cues, saved_hot, SAVED_HOT, a, AZ_STATUS_LOAD_SCOPE, n);
+    HS_SET(r, d, CUES, cues, saved_memory, SAVED_MEMORY, a, AZ_STATUS_LOAD_SCOPE, n);
+    v->cues.saved_hot_info.info.provenance = v->cues.saved_memory_info.info.provenance = AZ_PROV_FILE;
+    hs_track_analysis(r, d, loaded);
+}
+static void hs_load_changed(struct hs_record *r, unsigned d, int loaded)
+{
+    unsigned pending = loaded ? AZ_AVAIL_LOADING : AZ_AVAIL_EMPTY;
+    unsigned available = loaded ? AZ_AVAIL_READY : AZ_AVAIL_EMPTY;
+    if (loaded && hs_next_epoch == UINT64_MAX) abort();
+    r->epoch = loaded ? ++hs_next_epoch : 0;
+    hs_track_fields(r, d, loaded);
+    hs_decks[d].motion = (struct hs_record){ 0 };
+    r->motion_sequence = 0;
+    HS_SET(r, d, POSITION, position, head, HEAD, pending, AZ_STATUS_LOAD_SCOPE, 0);
+    HS_SET(r, d, POSITION, position, remaining_s, REMAINING_S, pending, AZ_STATUS_LOAD_SCOPE, 0);
+    HS_SET(r, d, PHASE, phase, beat, BEAT, pending, AZ_STATUS_LOAD_SCOPE, 0);
+    r->image.load.state = loaded ? AZ_STATUS_LOAD_LOADED : AZ_STATUS_LOAD_EMPTY;
+    HS_SET(r, d, LOAD, load, state, STATE, AZ_AVAIL_READY, AZ_STATUS_UNIT, 1);
+    r->image.transport.state = AZ_PLAYBACK_PAUSED;
+    HS_SET(r, d, TRANSPORT, transport, state, STATE, available, AZ_STATUS_LOAD_SCOPE, loaded);
+    r->image.loop.engaged = 0;
+    HS_SET(r, d, LOOP, loop, engaged, ENGAGED, available, AZ_STATUS_LOAD_SCOPE, loaded);
+    HS_SET(r, d, LOOP, loop, retained_in, RETAINED_IN, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
+    HS_SET(r, d, LOOP, loop, retained_out, RETAINED_OUT, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
+    HS_SET(r, d, LOOP, loop, working_in, WORKING_IN, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
+    HS_SET(r, d, LOOP, loop, working_out, WORKING_OUT, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
+}
 /* The soak owns the deck mutation. Publish at that point even for tick-less mods. */
 static void hs_deck_changed(unsigned d, int what)
 {
     struct hs_record r = hs_next(d);
     if (what == AZ_DECK_LOADED || what == AZ_DECK_EJECTED) {
-        int loaded = what == AZ_DECK_LOADED;
-        if (loaded && hs_next_epoch == UINT64_MAX) abort();
-        r.epoch = loaded ? ++hs_next_epoch : 0;
-        hs_track_fields(&r, d, loaded);
-        hs_decks[d].motion = (struct hs_record){ 0 };
-        r.motion_sequence = 0;
-        HS_SET(&r, d, POSITION, position, head, HEAD, loaded ? AZ_AVAIL_LOADING : AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
-        HS_SET(&r, d, POSITION, position, remaining_s, REMAINING_S, loaded ? AZ_AVAIL_LOADING : AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
-        HS_SET(&r, d, PHASE, phase, beat, BEAT, loaded ? AZ_AVAIL_LOADING : AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
-        r.image.load.state = loaded ? AZ_STATUS_LOAD_LOADED : AZ_STATUS_LOAD_EMPTY;
-        HS_SET(&r, d, LOAD, load, state, STATE, AZ_AVAIL_READY, AZ_STATUS_UNIT, 1);
-        r.image.transport.state = AZ_PLAYBACK_PAUSED;
-        HS_SET(&r, d, TRANSPORT, transport, state, STATE, loaded ? AZ_AVAIL_READY : AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, loaded);
-        r.image.loop.engaged = 0;
-        HS_SET(&r, d, LOOP, loop, engaged, ENGAGED, loaded ? AZ_AVAIL_READY : AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, loaded);
-        HS_SET(&r, d, LOOP, loop, retained_in, RETAINED_IN, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
-        HS_SET(&r, d, LOOP, loop, retained_out, RETAINED_OUT, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
-        HS_SET(&r, d, LOOP, loop, working_in, WORKING_IN, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
-        HS_SET(&r, d, LOOP, loop, working_out, WORKING_OUT, AZ_AVAIL_EMPTY, AZ_STATUS_LOAD_SCOPE, 0);
+        hs_load_changed(&r, d, what == AZ_DECK_LOADED);
     } else if (what == AZ_DECK_PLAY || what == AZ_DECK_STOP) {
         if (!r.epoch) return;
         r.image.transport.state = what == AZ_DECK_PLAY ? AZ_PLAYBACK_PLAYING : AZ_PLAYBACK_PAUSED;

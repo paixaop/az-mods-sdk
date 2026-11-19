@@ -28,9 +28,10 @@ struct frame {
 static _Thread_local struct frame *active;
 typedef _Unwind_Reason_Code (*personality_fn)(int, _Unwind_Action, _Unwind_Exception_Class, struct _Unwind_Exception *, struct _Unwind_Context *);
 static _Thread_local personality_fn real_personality;
-static personality_fn resolve_personality(void) {
+static personality_fn resolve_personality(void)
+{
     int saved = errno;
-    personality_fn fn = (personality_fn) dlsym(RTLD_NEXT, "__gcc_personality_v0");
+    personality_fn fn = (personality_fn)dlsym(RTLD_NEXT, "__gcc_personality_v0");
     errno = saved;
     if (!fn) abort();
     return fn;
@@ -39,10 +40,11 @@ extern void *__cxa_begin_catch(void *);
 extern void __cxa_end_catch(void);
 __attribute__((visibility("hidden")))
 _Unwind_Reason_Code
-__gcc_personality_v0(int version, _Unwind_Action actions, _Unwind_Exception_Class kind, struct _Unwind_Exception *error, struct _Unwind_Context *context) {
+__gcc_personality_v0(int version, _Unwind_Action actions, _Unwind_Exception_Class kind, struct _Unwind_Exception *error, struct _Unwind_Context *context)
+{
     if (version != 1) return _URC_FATAL_PHASE1_ERROR;
     struct frame *f = active;
-    if (f && !(actions & _UA_FORCE_UNWIND) && (uintptr_t) fixture_native_try == _Unwind_GetRegionStart(context)) {
+    if (f && !(actions & _UA_FORCE_UNWIND) && (uintptr_t)fixture_native_try == _Unwind_GetRegionStart(context)) {
         /* Keep this guard active until payload destruction finishes. A failure
          * inside that runtime cleanup must terminate, like the native handler. */
         if (f->handling) return _URC_FATAL_PHASE1_ERROR;
@@ -55,7 +57,8 @@ __gcc_personality_v0(int version, _Unwind_Action actions, _Unwind_Exception_Clas
 }
 /* The jump happens only after phase-two unwinding reaches this cleanup.
  * Jumping at the throw site would skip native destructors and C cleanups. */
-static void release(struct frame *f) {
+static void release(struct frame *f)
+{
     if (f->handling) abort();
     if (f->error) {
         f->handling = 1;
@@ -70,9 +73,10 @@ static void release(struct frame *f) {
     }
     active = f->previous;
 }
-__attribute__((noinline, visibility("hidden"))) int fixture_native_try(void (*fn)(void *), void *argument) {
+__attribute__((noinline, visibility("hidden"))) int fixture_native_try(void (*fn)(void *), void *argument)
+{
     if (!real_personality) real_personality = resolve_personality();
-    struct frame f __attribute__((cleanup(release))) = {.previous = active};
+    struct frame f __attribute__((cleanup(release))) = { .previous = active };
     if (setjmp(f.jump)) {
         f.error = NULL;
         return 0;

@@ -47,6 +47,21 @@ class SlipCapture(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, mode + ": " + result.stdout + result.stderr)
                     self.assertIn("PASS slip capture " + mode, result.stdout)
 
+    @unittest.skipUnless(platform.system() == "Linux", "ELF program-header binding requires Linux")
+    def test_probe_binding_and_worker_lifetime(self):
+        cc = shutil.which("clang")
+        if not cc:
+            self.skipTest("Clang unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "probe"
+            built = subprocess.run([cc, "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
+                "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-I" + str(ROOT / "include"),
+                str(ROOT / "tests/fixtures/slip-probe.c"), "-o", str(binary)], capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("PASS slip probe", result.stdout)
+
     def test_by_value_record(self):
         self.run_fixture(["capture"])
 

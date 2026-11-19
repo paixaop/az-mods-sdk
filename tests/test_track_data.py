@@ -77,14 +77,13 @@ class TrackDataHarnessTests(unittest.TestCase):
     def test_regression_controls(self):
         original = (self.root / "tools/harness/track-data.h").read_text()
         controls = [
-            ("track identity", "ht_request", "!ref->source_id ||", "0 ||"),
-            ("waveform identity", "ht_wave_request", "!ref->source_id ||", "0 ||"),
-            ("track stored size", "ht_request", "v->track.size = sizeof v->track;", ""),
-            ("waveform stored size", "ht_wave_request", "v->track.size = sizeof v->track;", ""),
-            ("command envelope", "ht_command", "!r->request_id ||", "0 ||"),
-            ("packed waveform offset", "ht_wave_request", "q->first_column * v->bytes_per_column", "q->first_column"),
-            ("command finite arguments", "ht_command", "!isfinite(r->position_s)", "0"),
-            ("command flags", "ht_command", "(r->flags & ~(AZ_COMMAND_PERSIST | AZ_COMMAND_NATIVE_LOAD | AZ_COMMAND_NATIVE_CUE_IDS))", "0"),
+            ("shared track identity", "ht_ref_valid", "&& ref->source_id &&", "&& 1 &&"),
+            ("track stored size", "ht_track_fill", "v->track.size = sizeof v->track;", ""),
+            ("waveform stored size", "ht_wave_fill", "v->track.size = sizeof v->track;", ""),
+            ("command envelope", "ht_command_header_valid", "&& r->request_id;", "&& 1;"),
+            ("packed waveform offset", "ht_wave_fill", "q->first_column * v->bytes_per_column", "q->first_column"),
+            ("command finite arguments", "ht_command_payload_valid", "isfinite(r->position_s)", "1"),
+            ("command flags", "ht_command_flags_valid", "(r->flags & ~(AZ_COMMAND_PERSIST | AZ_COMMAND_NATIVE_LOAD | AZ_COMMAND_NATIVE_CUE_IDS))", "0"),
             ("unknown quantize", "ht_deck", "v.quantize =", ""),
         ]
         with tempfile.TemporaryDirectory() as directory:
@@ -98,7 +97,9 @@ class TrackDataHarnessTests(unittest.TestCase):
             shutil.copyfile(self.root / "tests/fixtures/harness-track-data.c", fixture)
             for label, function, old, new in controls:
                 with self.subTest(control=label):
-                    start = original.index("static int " + function + "(")
+                    declaration = re.search(r"^static (?:int|void) " + re.escape(function) + r"\(", original, re.MULTILINE)
+                    self.assertIsNotNone(declaration, function)
+                    start = declaration.start()
                     end = original.index("\n}", start)
                     body = original[start:end]
                     self.assertEqual(body.count(old), 1)
