@@ -1,5 +1,5 @@
 """Use actual selected core provider code, never an optimistic caps supplier."""
-import os,pathlib,re,shutil,subprocess,tempfile,unittest
+import os,pathlib,re,shutil,subprocess,tempfile,unittest,sys
 SDK=pathlib.Path(__file__).resolve().parents[1]
 class Provider(unittest.TestCase):
     def run_provider(self,sanitize=False):
@@ -14,7 +14,7 @@ class Provider(unittest.TestCase):
             (out/'deck.inc').write_text(deck[:deck.index('/* az_core_v1.deck_info */')]+'\n'+deck[deck.index('/* ---- on_deck_event'):])
             track=(core/'src/azmod/sdk_track.c').read_text();start=track.index('static int sdk_data_capabilities(')
             # Link the real command service; absent native binding must stay unsupported.
-            (out/'caps.inc').write_text('#include "sdk_command_service.h"\n'+track[start:track.index('\n}',start)+2]+'\n')
+            (out/'caps.inc').write_text('#include "sdk_command_service.h"\n#include "track_service.h"\n'+track[start:track.index('\n}',start)+2]+'\n')
             boundary=fixture.read_text()
             self.assertEqual(boundary.count('int main(void)'),1)
             (out/'provider-fixture.c').write_text(boundary.split('int main(void)',1)[0])
@@ -22,10 +22,10 @@ class Provider(unittest.TestCase):
             limits=['-D'+re.search(r'^#define (ST_'+name+r'\s+[0-9]+)',engine,re.M).group(1).replace(' ','=') for name in ('PER_OWNER','SLOTS')]
             probe=pathlib.Path(os.environ.get('AZ_CUE_PROBE_SOURCE',SDK/'examples/public-state-probe/probe.c'))
             flags=['-fsanitize=address,undefined','-fno-sanitize-recover=all'] if sanitize else []
-            argv=[cc,'-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-unused-variable',*flags,*limits,
+            argv=[cc,'-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-unused-variable','-ffunction-sections','-fdata-sections',*flags,*limits,
                   '-I'+str(SDK/'include'),'-I'+str(core/'src/azmod'),'-I'+str(core/'src'),'-DSDKCUEEVENTS_INC="'+str(out/'deck.inc')+'"',
                   '-DSDK_CUE_PROVIDER_FIXTURE="'+str(out/'provider-fixture.c')+'"','-DSDK_CUE_CAPABILITIES="'+str(out/'caps.inc')+'"',
-                  '-DPUBLIC_PROBE_IMPL="'+str(probe)+'"',str(SDK/'tests/fixtures/public-cue-provider.c'),str(core/'src/azmod/sdk_command_service.c'),str(core/'src/azmod/sdk_command_engine.c'),'-pthread','-lm','-o',str(out/'test')]
+                  '-DPUBLIC_PROBE_IMPL="'+str(probe)+'"',str(SDK/'tests/fixtures/public-cue-provider.c'),str(core/'src/azmod/sdk_command_service.c'),str(core/'src/azmod/sdk_command_engine.c'),str(core/'src/azmod/track_service.c'),'-Wl,-dead_strip' if sys.platform=='darwin' else '-Wl,--gc-sections','-pthread','-lm','-o',str(out/'test')]
             built=subprocess.run(argv,capture_output=True,text=True)
             self.assertEqual(built.returncode,0,built.stderr)
             expected=os.environ.get('AZ_EXPECT_CUE_SUPPORT','1')

@@ -6,9 +6,9 @@
 #include SDK_CUE_PROVIDER_FIXTURE
 #include <stdarg.h>
 #include <stdlib.h>
-static struct {
-    int ok;
-} g_sdk_sq;
+#include "library_sql.h"
+static const struct az_library_sql g_sdk_sq;
+const struct az_library_sql *az_storage_sql(void) { return &g_sdk_sq; }
 #include SDK_CUE_CAPABILITIES
 static unsigned client_starts, client_logs, client_mode;
 static void *(*client_worker)(void *);
@@ -67,6 +67,7 @@ int main(int argc, char **argv)
     assert(argc == 3);
     int expected_support = atoi(argv[1]);
     client_mode = (unsigned)atoi(argv[2]);
+    track_service_configure(1);
     sdk_deck_tick(100); /* Resolve the actual provider function slots as GUI collection does. */
     az_data_capabilities capabilities = { .size = sizeof capabilities };
     assert(sdk_data_capabilities(&capabilities) == AZ_OK);
