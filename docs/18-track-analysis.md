@@ -55,16 +55,24 @@ already passed its commit point cannot be rolled back by cancellation.
 ## Copied results and vocals
 
 Call `result` only after `status` returns `AZ_OK` with
-`state == AZ_ANALYSIS_COMPLETE` and `status.result == AZ_OK`. It copies typed
-phrase and vocal arrays into caller buffers. Initialize the result's `size`.
-A NULL/zero-capacity sizing read returns `AZ_LIMIT` with counts and NULL array
-pointers. Provide enough capacity
-for both arrays to obtain `AZ_OK`; there is no partial array copy. `AZ_PENDING`
-means computation/publication is still pending. An `AZ_BUSY` return while
-copying a successful result can be retried, as can `AZ_BUSY` from `release`.
-An already-populated source completes with `AZ_ANALYSIS_COMPLETE` and
-`status.result == AZ_NOT_FOUND`, without new result arrays. Release that request
-and use the stored track-data and interval readers for that source.
+`state == AZ_ANALYSIS_COMPLETE` and `status.result == AZ_OK`. When this request
+produced new analysis, it copies typed phrase and vocal arrays into caller
+buffers. Initialize the result's `size`. For an available computed result,
+a NULL/zero-capacity sizing read returns `AZ_LIMIT` with counts and NULL array
+pointers. Provide enough capacity for both arrays to obtain `AZ_OK`; there is
+no partial array copy. `AZ_PENDING` means computation/publication is still
+pending. An `AZ_BUSY` return while copying a successful result can be retried,
+as can `AZ_BUSY` from `release`.
+
+Reusing populated components may produce no new result arrays. If reuse needs
+no pending publication or library transaction, the request completes with
+`AZ_ANALYSIS_COMPLETE` and `status.result == AZ_NOT_FOUND`. If existing data
+still needs library linking, the request waits in `AZ_ANALYSIS_SAVED` with
+`status.result == AZ_PENDING` for the transaction outcome. Successful linking
+completes with `AZ_ANALYSIS_COMPLETE` and `status.result == AZ_OK`; `result`
+can still return `AZ_NOT_FOUND` because this request computed no new arrays.
+Release a request with no new arrays and use the relevant existing track-data
+and interval readers.
 
 Copied bytes belong to the caller and remain valid after release or owner
 retirement. Phrase entries use one-based native grid ordinals, not timestamps.
