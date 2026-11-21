@@ -648,28 +648,31 @@ static int s_audio_tap(const char *id, int source, int frames, void (*fn)(const 
 static int s_deck_info(int deck, az_deck_info *out)
 {
     lifetime_gate();
-    if (!out || out->size < (int)offsetof(az_deck_info, title)) {
-        fail(K_API, "deck_info with size %d", out ? out->size : -1);
+    int size = -1;
+    if (out) memcpy(&size, out, sizeof size);
+    if (size < (int)(offsetof(az_deck_info, loaded) + sizeof out->loaded)) {
+        fail(K_API, "deck_info with size %d", size);
         return -1;
     }
     if (deck < 0 || deck > 3) {
         fail(K_API, "deck_info(%d): decks are 0..3", deck);
         return -1;
     }
-    int size = out->size;
+    az_deck_info value = { 0 };
+    value.size = size;
     pthread_mutex_lock(&dmu);
-    memset(out, 0, sizeof *out);
-    out->size = size;
-    out->loaded = D.loaded[deck];
-    out->playing = D.loaded[deck] ? D.playing[deck] : 0;
-    out->pad_mode = -1;
-    out->bpm = D.loaded[deck] ? D.bpm[deck] : 0.0;
-    out->len_s = -1;
+    value.loaded = D.loaded[deck];
+    value.playing = D.loaded[deck] ? D.playing[deck] : 0;
+    value.pad_mode = -1;
+    value.bpm = D.loaded[deck] ? D.bpm[deck] : 0.0;
+    value.len_s = -1;
     if (D.loaded[deck]) {
-        snprintf(out->title, sizeof out->title, "%s", D.title[deck]);
-        snprintf(out->artist, sizeof out->artist, "%s", D.artist[deck]);
+        snprintf(value.title, sizeof value.title, "%s", D.title[deck]);
+        snprintf(value.artist, sizeof value.artist, "%s", D.artist[deck]);
     }
     pthread_mutex_unlock(&dmu);
+    size_t bytes = (size_t)size < sizeof value ? (size_t)size : sizeof value;
+    memcpy(out, &value, bytes);
     return 0;
 }
 

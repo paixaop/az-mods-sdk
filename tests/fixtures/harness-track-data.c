@@ -7,6 +7,67 @@
 static const az_observation_v1 *observations = &HT_OBSERVATION;
 static const az_commands_v1 *commands = &HT_COMMANDS;
 
+static void legacy_deck_info_prefixes(void)
+{
+    unsigned char previous[sizeof D];
+    memcpy(previous, &D, sizeof D);
+    D.playing[3] = 1;
+    D.bpm[3] = 126.5;
+    snprintf(D.title[3], sizeof D.title[3], "%s", "Prefix track");
+    snprintf(D.artist[3], sizeof D.artist[3], "%s", "Prefix artist");
+    const int capacities[] = {
+        offsetof(az_deck_info, title),
+        offsetof(az_deck_info, loaded) + sizeof(int),
+        sizeof(az_deck_info),
+        sizeof(az_deck_info) + 16,
+    };
+    for (int loaded = 0; loaded <= 1; ++loaded) {
+        D.loaded[3] = loaded;
+        for (unsigned i = 0; i < sizeof capacities / sizeof *capacities; ++i) {
+            int capacity = capacities[i];
+            unsigned char *buffer = malloc((size_t)capacity);
+            assert(buffer);
+            memset(buffer, 0x5a, (size_t)capacity);
+            memcpy(buffer, &capacity, sizeof capacity);
+            assert(CORE.deck_info(3, (az_deck_info *)buffer) == 0);
+            az_deck_info value = { 0 };
+            size_t bytes = (size_t)capacity < sizeof value ? (size_t)capacity : sizeof value;
+            memcpy(&value, buffer, bytes);
+            assert(value.size == capacity && value.loaded == loaded);
+            if (bytes >= offsetof(az_deck_info, title)) {
+                assert(value.playing == loaded && value.pad_mode == -1);
+                assert(!value.has_stems && !value.stems_on && !value.content_id);
+                assert(value.bpm == (loaded ? 126.5 : 0));
+                assert(value.len_s < 0); /* Unknown duration has no source clock. */
+            }
+            if (bytes >= sizeof value) {
+                assert(!strcmp(value.title, loaded ? "Prefix track" : ""));
+                assert(!strcmp(value.artist, loaded ? "Prefix artist" : ""));
+                assert(!value.key[0]);
+            }
+            for (size_t tail = bytes; tail < (size_t)capacity; ++tail) assert(buffer[tail] == 0x5a);
+            free(buffer);
+        }
+    }
+    const int invalid_sizes[] = { -1, 0, sizeof(int), offsetof(az_deck_info, loaded) + sizeof(int) - 1 };
+    int *short_record = malloc(sizeof *short_record);
+    assert(short_record);
+    for (unsigned i = 0; i < sizeof invalid_sizes / sizeof *invalid_sizes; ++i) {
+        *short_record = invalid_sizes[i];
+        assert(CORE.deck_info(3, (az_deck_info *)short_record) == -1);
+        assert(*short_record == invalid_sizes[i]);
+    }
+    free(short_record);
+    az_deck_info unchanged = { .size = sizeof unchanged, .loaded = 7 };
+    unsigned char before[sizeof unchanged];
+    memcpy(before, &unchanged, sizeof before);
+    assert(CORE.deck_info(-1, &unchanged) == -1);
+    assert(CORE.deck_info(4, &unchanged) == -1);
+    assert(!memcmp(&unchanged, before, sizeof unchanged));
+    assert(CORE.deck_info(0, NULL) == -1);
+    memcpy(&D, previous, sizeof D);
+}
+
 static void waveform_axis(const az_wave_snapshot *wave, uint32_t first, uint64_t source_rate)
 {
     /* Every synthetic preview here spans the fixture's two-second track;
@@ -438,6 +499,7 @@ static void status_motion_fixture(void)
 }
 int main(void)
 {
+    legacy_deck_info_prefixes();
     timing_precision();
     mod_id = "fixture";
     thread_lifetime = lifetime;
