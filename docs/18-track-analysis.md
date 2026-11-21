@@ -7,7 +7,8 @@ engine or launch a worker. Check `AZ_HAS(core, analysis_service)` and
 `AZ_ANALYSIS_HAS(service, member)` before using each operation. An unsupported
 service or capability is an explicit failure; do not retry through an older API.
 
-The built-in Track Analysis setting controls automatic loaded-track processing.
+The independent Phrase Extraction and Vocal Extraction switches in Extras
+control automatic loaded-track processing. There is no master switch.
 An explicit SDK request has its own lifetime and is unaffected by that toggle.
 Both paths share one active computation and at most three analysis workers on
 A53 CPUs 1–3 at nice 19. Scheduling-policy failure prevents computation. Each
@@ -88,11 +89,54 @@ instrumental timeline returns `AZ_OK` with zero intervals. Unknown formats,
 malformed data, stale sources and unsupported firmware remain explicit errors.
 Use `compare_timestamps()` with the source's actual clock for comparisons.
 
+## Completion notifications
+
+Check `AZ_ANALYSIS_HAS(service, on_complete)` and register once during `init()`:
+
+```c
+static void analyzed(const az_analysis_complete_v1 *event, void *user) {
+    struct app_state *state = user;
+    state->completion = *event;
+    state->refresh_pending = 1;
+}
+/* After obtaining the service, before starting workers: */
+int rc = service->on_complete("my-mod", analyzed, &state);
+```
+
+The callback receives successful automatic and SDK-requested analysis, including
+requests from other mods. It runs on the UI thread even when the mod has no tick
+callback, outside provider locks. Keep it bounded: schedule worker reads using
+your normal synchronized handoff. The example's state belongs to the UI thread;
+worker access needs synchronization.
+
+Each record carries `request_id`, `source_kind`, `track`, `deck`, and
+`load_epoch`. A deck identity is valid only for `AZ_ANALYSIS_DECK`; a streaming
+track can have no USB `track` reference. `generated_components` tells which of
+`AZ_DATA_PHRASES` and `AZ_ANALYSIS_VOCALS` this run extracted.
+`available_components` includes the requested components confirmed available,
+including pre-existing ones. Reuse therefore has a zero generated mask. A valid
+instrumental vocal map still has the vocals bit set.
+
+Success means final publication and any required library linking completed.
+There is no success event for failed/cancelled work or saved files still waiting
+for native/library completion. A later track replacement or edit can invalidate
+a queued event: recheck `load_epoch` and reacquire the data before acting.
+
+Registration starts at the current journal end. Each listener has its own cursor;
+at most 16 records are delivered per UI turn. The journal holds 64 events.
+`missed != 0` means earlier records were lost, so rebuild relevant current state
+instead of assuming every completion was observed. `sequence` orders records.
+The event pointer is valid only during the call. Copy it for later use. Failed
+initialization and retired owner lifetimes receive no callbacks. Registration
+returns `AZ_INVALID` for invalid ownership/context/callback or `AZ_LIMIT` for a
+duplicate. This is an append-only ABI extension; older cores may omit it.
+
 ## Ownership and failure
 
-Requests retain copied input records only. No mod pointer or callback remains
-borrowed asynchronously. Failed initialization and live disable retire the
-owner lifetime: new requests and new publication admission are refused, pending work is
+Requests retain copied input records only. Completion subscriptions retain the
+callback and user pointer for the registered owner lifetime; keep that state alive
+until retirement, and register again during each new initialization. Failed
+initialization and live disable retire the owner lifetime: new requests and new publication admission are refused, pending work is
 cancelled, and active decoder children are joined before their owned resources
 are reclaimed. Re-enable creates a distinct lifetime; old request IDs cannot
 become another owner's work. One owner's retirement does not stop built-in work

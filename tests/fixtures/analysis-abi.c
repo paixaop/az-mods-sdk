@@ -8,6 +8,9 @@ static int request(const char *id, const az_analysis_request_v1 *r, uint64_t *ou
     *out = 42;
     return AZ_OK;
 }
+static int subscribe(const char *id, az_analysis_complete_fn fn, void *user) {
+    (void) id; (void) fn; (void) user; return AZ_OK;
+}
 int main(void) {
     az_analysis_v1 table = {.abi = AZ_ANALYSIS_ABI, .size = sizeof table, .request = request};
     const az_analysis_v1 *service = &table;
@@ -18,6 +21,12 @@ int main(void) {
     table.abi = AZ_ANALYSIS_ABI;
     table.size = offsetof(az_analysis_v1, request);
     assert(!AZ_ANALYSIS_HAS(service, request));
+    table.size = sizeof table;
+    assert(!AZ_ANALYSIS_HAS(service, on_complete));
+    table.on_complete = subscribe;
+    assert(AZ_ANALYSIS_HAS(service, on_complete));
+    table.size = offsetof(az_analysis_v1, on_complete);
+    assert(!AZ_ANALYSIS_HAS(service, on_complete));
     table.size = sizeof table;
     az_analysis_request_v1 r = {.size = sizeof r, .version = AZ_ANALYSIS_REQUEST_VERSION};
     uint64_t id = 0;
