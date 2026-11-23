@@ -12,16 +12,18 @@ work starts.
 The header is a binary interface that every published mod depends on, so it only grows: new
 fields go at the end of a struct and are checked with `AZ_HAS`. Changes land in the AZ-MODS
 core first and are then copied here unchanged (`tools/check-header.py` compares the two).
+SDK CI fetches the current `main` branch of the core repository under the same GitHub
+owner and uses that checkout for the mirror check and provider tests.
 
 ## Checks
 
 | Command | Checks |
 |---|---|
-| `python3 -m unittest discover -s tests -v` | `azmod-pack` |
+| `AZ_CORE_TEST_ROOT=/path/to/core python3 -m unittest discover -s tests -v` | the SDK and its integration with the selected core checkout |
+| `python3 tools/check-header.py --core /path/to/core` | the SDK mirrors match that core checkout |
 | `tools/azmod-pack image` | the build container, labeled with a hash of `docker/` |
 | `tools/check-doc-snippets.py` (and `--control`) | every C block in the guide compiles against the header |
 | `tools/azmod-pack build template` | the template builds and validates |
-| `cd template/out && sha256sum -c ../../tests/expected/hello-az.so.sha256` | the build is byte-identical to the recorded one |
 | `make -C template test SAN=plain` (`asan`, `tsan`) | the template under the test harness |
 | `tools/azmod-pack build tests/c/hello-decks`, `make -C tests/c/hello-decks test SAN=plain` (`asan`, `tsan`) | the C deck-status test mod builds, validates and passes the harness |
 | `sh tools/harness/sanitize.sh --controls --passes plain` (`asan`, `tsan`) | every planted bug is caught (9, 3 and 1 on Linux) |

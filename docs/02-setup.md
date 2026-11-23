@@ -123,18 +123,6 @@ The SDK's `.gitattributes` keeps LF line endings on every system, so the Makefil
 the Linux container. Files you add to a mod by hand need LF endings too. A CRLF file shows up
 as `/bin/sh^M: bad interpreter` or as `missing separator` from make.
 
-## Check the build is byte-identical
-
-The same source builds to the same bytes on every machine, because the container pins its
-base image and every toolchain package. The SDK records the template's hash, so you can
-compare your build with it:
-
-| System | From the SDK folder |
-|---|---|
-| Linux, WSL | `cd template/out && sha256sum -c ../../tests/expected/hello-az.so.sha256` |
-| macOS | `cd template/out && shasum -a 256 -c ../../tests/expected/hello-az.so.sha256` |
-| PowerShell | `(Get-FileHash template\out\hello-az.so).Hash.ToLower() -eq (Get-Content tests\expected\hello-az.so.sha256).Split(' ')[0]` (prints `True` on a match) |
-
 ## `azmod-pack` on your PATH
 
 The rest of the guide writes `azmod-pack` without its folder. To run it that way, add

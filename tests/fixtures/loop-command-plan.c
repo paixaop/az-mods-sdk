@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+#define _DARWIN_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
 #include <stdint.h>
 static uint64_t virtual_now = UINT64_C(1000000000000);
 static uint64_t virtual_clock(void) { return virtual_now; }

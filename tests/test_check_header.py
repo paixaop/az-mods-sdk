@@ -7,9 +7,7 @@ import contextlib
 import os
 import tempfile
 import unittest
-from unittest import mock
 import pathlib
-import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SDK = os.path.dirname(HERE)
@@ -80,7 +78,7 @@ class CheckHeader(unittest.TestCase):
         pathlib.Path(self.timestamps).unlink()
         self.assertEqual(self.run_main(self.core(self.data)), 2)
 
-    def pinned_repository(self):
+    def core_checkout(self):
         root = pathlib.Path(self.tmp.name) / "core"
         root.mkdir()
         for target, source in (("src/azmod/azmod-mod.h", ch.SDK_HEADER),
@@ -89,33 +87,22 @@ class CheckHeader(unittest.TestCase):
             path = root / target
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(pathlib.Path(source).read_bytes())
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
-        subprocess.run(["git", "-C", str(root), "-c", "user.name=Contract test",
-                        "-c", "user.email=test@example.invalid", "commit", "-qm", "Contract input"], check=True)
-        pin = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-        pinfile = pathlib.Path(self.tmp.name) / "CORE-COMMIT"
-        pinfile.write_text(pin + "\n")
-        return root, pinfile
+        return root
 
-    def run_pinned(self, root, pinfile):
-        with mock.patch.object(ch, "SDK_PIN", str(pinfile)), \
-             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    def run_checkout(self, root):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return ch.main(["check-header.py", "--core", str(root)])
 
-    def test_exact_pin_does_not_substitute_working_tree(self):
-        root, pinfile = self.pinned_repository()
-        (root / "src/azmod/azmod-mod.h").write_text("dirty header")
-        self.assertEqual(self.run_pinned(root, pinfile), 0)
-        with mock.patch.object(ch, "SDK_HEADER", str(root / "src/azmod/azmod-mod.h")):
-            self.assertEqual(self.run_pinned(root, pinfile), 1)
+    def test_checkout_reads_current_files(self):
+        root = self.core_checkout()
+        self.assertEqual(self.run_checkout(root), 0)
+        (root / "src/azmod/azmod-mod.h").write_bytes(self.data + b"\n/* changed core */\n")
+        self.assertEqual(self.run_checkout(root), 1)
 
-    def test_unavailable_and_malformed_pins_fail(self):
-        root, pinfile = self.pinned_repository()
-        pinfile.write_text("0" * 40)
-        self.assertEqual(self.run_pinned(root, pinfile), 2)
-        pinfile.write_text("HEAD")
-        self.assertEqual(self.run_pinned(root, pinfile), 2)
+    def test_checkout_requires_all_mirrors(self):
+        root = self.core_checkout()
+        (root / "docs/MOD-MENU-KEYS.md").unlink()
+        self.assertEqual(self.run_checkout(root), 2)
 
     def test_missing_core_header(self):
         self.assertEqual(self.run_main(os.path.join(self.tmp.name, "nope.h")), 2)

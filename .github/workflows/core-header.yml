@@ -1,16 +1,9 @@
-name: core header
+name: core compatibility
 
-# include/azmod-mod.h is the core's public API. It must be byte-identical to the header in
-# the AZ-MODS core at the commit named in include/CORE-COMMIT, so a mod built with this SDK
-# matches what the deck runs.
+# Compile and test the SDK against the current core main branch.
 on:
   push:
-    branches: [main]
-    paths:
-      - include/**
   pull_request:
-    paths:
-      - include/**
   workflow_dispatch:
 
 permissions:
@@ -20,46 +13,22 @@ env:
   CORE_REPOSITORY: ${{ github.repository_owner }}/xdj-az-mods
 
 jobs:
-  compare:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compare with the core
-        run: |
-          set -eu
-          sha=$(tr -d '[:space:]' < include/CORE-COMMIT)
-          case "$sha" in
-            *[!0-9a-f]* | "") echo "include/CORE-COMMIT must hold one full commit id"; exit 1 ;;
-          esac
-          [ ${#sha} -eq 40 ] || { echo "include/CORE-COMMIT must hold a 40-character commit id"; exit 1; }
-          core="$RUNNER_TEMP/xdj-az-mods"
-          git init "$core"
-          git -C "$core" fetch --depth=1 "https://github.com/$CORE_REPOSITORY.git" "$sha"
-          python3 tools/check-header.py --core "$core"
-
   provider-integration:
-    if: github.event_name == 'workflow_dispatch'
-    needs: compare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check out core main and compare the SDK mirrors
+        run: |
+          core="$RUNNER_TEMP/xdj-az-mods"
+          git clone --depth=1 --branch main "https://github.com/$CORE_REPOSITORY.git" "$core"
+          python3 tools/check-header.py --core "$core"
+          printf 'AZ_CORE_TEST_ROOT=%s\n' "$core" >> "$GITHUB_ENV"
       - name: Install integration dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libsqlite3-dev libx11-dev xauth xvfb
           sudo sysctl -w vm.mmap_rnd_bits=28
-      - name: Check out the pinned core revision
-        run: |
-          core="$RUNNER_TEMP/xdj-az-mods"
-          sha=$(tr -d '[:space:]' < include/CORE-COMMIT)
-          git init "$core"
-          git -C "$core" fetch --depth=1 "https://github.com/$CORE_REPOSITORY.git" "$sha"
-          git -C "$core" checkout --detach FETCH_HEAD
-          test "$(git -C "$core" rev-parse HEAD)" = "$sha"
-          test -z "$(git -C "$core" status --porcelain)"
-          python3 tools/check-header.py --core "$core"
-          printf 'AZ_CORE_TEST_ROOT=%s\n' "$core" >> "$GITHUB_ENV"
-      - name: Run the required provider and completion suites
+      - name: Run SDK unit and provider tests
         env:
           AZ_COMMAND_REAL_X: '1'
           HOST_CC: clang
