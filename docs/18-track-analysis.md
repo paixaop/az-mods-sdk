@@ -260,3 +260,13 @@ Close does not roll back already-published files or a commit that won the race.
 Firmware 2.00 USB emulator testing verified native phrase bars and subscribing mods
 after publication for two AAC-LC M4A tracks. Beatport resource/lease fixtures pass,
 but authenticated catalog playback and physical-deck acceptance remain outstanding.
+
+## Raw phrase decoding
+
+`azmod-phrases.h` provides `az_phrase_decode(raw_mood, raw_kind)` for the shared
+PSSI meanings of known moods. `AZ_PHRASE_UNCLASSIFIED` identifies a pair without
+a known category; the helper does not alter the raw fields or establish that an
+analysis component is available. Selection, grouping and any policy for unknown
+moods belong to the consuming feature. In particular, Anchor retains its
+kind-based unknown-mood policy, while Cues keeps unclassified phrases eligible
+for its Any selector.

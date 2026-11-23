@@ -32,6 +32,10 @@ class DataRefactor(unittest.TestCase):
             else:
                 self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 
+    def test_phrase_decoding(self):
+        self.run_fixture("phrases.c")
+        self.run_fixture("phrases.c", sanitize=True)
+
     def test_readers_c11(self):
         self.run_fixture('data-helpers.c')
 
