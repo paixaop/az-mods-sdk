@@ -2,33 +2,27 @@
 #include "azmod-mod.h"
 #include <assert.h>
 #include <string.h>
-
-/* Frozen ABI v1 positions before raw publication was retired. The two u32
- * header words precede 37 function slots; removing slot 27 would move every
- * later call made by an already compiled mod. */
-#define LEGACY_SLOT(index) (8 + (index) * sizeof(void (*)(void)))
-_Static_assert(offsetof(az_library_v1, analysis_open) == LEGACY_SLOT(26), "analysis open moved");
-_Static_assert(offsetof(az_library_v1, reserved_analysis_commit) == LEGACY_SLOT(27), "raw slot moved");
-_Static_assert(offsetof(az_library_v1, analysis_close) == LEGACY_SLOT(28), "analysis close moved");
-_Static_assert(offsetof(az_library_v1, analysis_grid) == LEGACY_SLOT(35), "typed grid moved");
-_Static_assert(offsetof(az_library_v1, analysis_commit_result) == LEGACY_SLOT(36), "typed commit moved");
-_Static_assert(sizeof(az_library_v1) == LEGACY_SLOT(37), "library size changed");
-
-static int close_job(const char *id, uint64_t job) {
-    assert(!strcmp(id, "layout-test") && job == 42);
+static int request(const char *id, const az_analysis_request_v1 *r, uint64_t *out) {
+    assert(!strcmp(id, "analysis-client"));
+    if (r->version != AZ_ANALYSIS_REQUEST_VERSION) return AZ_UNSUPPORTED;
+    *out = 42;
     return AZ_OK;
 }
-
 int main(void) {
-    const az_library_v1 library = {.abi = AZ_LIBRARY_ABI, .size = sizeof library,
-                                  .analysis_close = close_job};
-    const az_library_v1 *service = &library;
-    int (*legacy_commit)(const char *, uint64_t, const void *, uint32_t);
-    int (*legacy_close)(const char *, uint64_t);
-    memcpy(&legacy_commit, (const unsigned char *)&library + LEGACY_SLOT(27), sizeof legacy_commit);
-    memcpy(&legacy_close, (const unsigned char *)&library + LEGACY_SLOT(28), sizeof legacy_close);
-    assert(!legacy_commit);
-    assert(legacy_close("layout-test", 42) == AZ_OK);
-    assert(AZ_LIB_HAS(service, analysis_close));
+    az_analysis_v1 table = {.abi = AZ_ANALYSIS_ABI, .size = sizeof table, .request = request};
+    const az_analysis_v1 *service = &table;
+    assert(AZ_ANALYSIS_HAS(service, request));
+    assert(!AZ_ANALYSIS_HAS(service, result));
+    table.abi++;
+    assert(!AZ_ANALYSIS_HAS(service, request));
+    table.abi = AZ_ANALYSIS_ABI;
+    table.size = offsetof(az_analysis_v1, request);
+    assert(!AZ_ANALYSIS_HAS(service, request));
+    table.size = sizeof table;
+    az_analysis_request_v1 r = {.size = sizeof r, .version = AZ_ANALYSIS_REQUEST_VERSION};
+    uint64_t id = 0;
+    assert(service->request("analysis-client", &r, &id) == AZ_OK && id == 42);
+    r.version++;
+    assert(service->request("analysis-client", &r, &id) == AZ_UNSUPPORTED);
     return 0;
 }

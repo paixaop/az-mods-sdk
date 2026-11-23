@@ -189,7 +189,7 @@ static int input(const az_event *event, void *user)
 }
 static int services_available(const az_core_v1 *c)
 {
-    return AZ_LIB_HAS(library, data_capabilities) && AZ_LIB_HAS(library, track_resolve) && AZ_LIB_HAS(library, track_request) &&
+    return AZ_OBSERVATION_HAS(observation, data_capabilities) && AZ_LIB_HAS(library, track_resolve) && AZ_LIB_HAS(library, track_request) &&
            AZ_LIB_HAS(library, track_acquire) && AZ_LIB_HAS(library, track_release) && AZ_HAS(c, thread_start) && AZ_LIB_HAS(library, lib_tracks);
 }
 static int init(const az_core_v1 *c)
@@ -206,7 +206,7 @@ static int init(const az_core_v1 *c)
     snprintf(lines[1], sizeof lines[1], "Loading library");
     az_data_capabilities caps = { 0 };
     caps.size = sizeof caps;
-    if (library->data_capabilities(&caps) != AZ_OK || !(caps.stored_components & AZ_DATA_CUES)) {
+    if (observation->data_capabilities(&caps) != AZ_OK || !(caps.stored_components & AZ_DATA_CUES)) {
         snprintf(lines[1], sizeof lines[1], "Track data unavailable");
         return 0;
     }

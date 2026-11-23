@@ -1,4 +1,4 @@
-# API reference (ABI version 1)
+# API reference (ABI version 2)
 
 For filtered live deck callbacks and optional event readers, see [Listening to a loaded deck](17-deck-status.md).
 For loaded USB/Beatport analysis leases and native phrase publication, see
@@ -1151,7 +1151,7 @@ The core calls every loaded mod's `on_frame`, in load order, for each `AZ_BUS_ER
 frame (the frame that sets the pad and mode-button LEDs), right before the deck sends it and
 after the core's own changes. [`frame_filter`](#control-frames-filters) sees every bus, including
 this one. `len` is the number of bytes that may be read and changed (the checksummed part of
-the frame, 120 bytes in ABI 1); nothing past it is touched.
+the frame, 120 bytes); nothing past it is touched.
 
 - To only read a frame, return `AZ_FRAME_OK`.
 - To change it, edit it in place and return `AZ_FRAME_OK`. The core recomputes the
@@ -1182,34 +1182,31 @@ it in `init` and returns non-zero with a log line naming it.
 A change that is not append-only gets a new ABI number (`AZ_MOD_ABI`), and the core
 refuses mods built for a different one, showing the reason in the Mod Menu.
 
-## Shared core library service (development)
+## Track data and native services
 
-`library_service(AZ_LIBRARY_ABI)` returns one versioned `az_library_v1` table for enumeration,
-source-qualified track data, cue/loop analysis, live observations, waveforms, timing, events
-and command submission. Check the getter with `AZ_HAS`, then members with `AZ_LIB_HAS`.
-Unsupported ABI versions return NULL. All consumers use the same core-owned service and cache;
-the individual development entries in the core table remain compatibility aliases.
+Check each getter with `AZ_HAS` and use the member guard on the returned table.
 
-See the [library service contract](13-track-data.md) for development flags, capabilities,
-units, ownership, unavailable native operations and firmware validation limits. The single
-[Core Library Inspector](../examples/library-inspector)
-is a diagnostic client; it contains no native reader or command backend.
+- `library_service(AZ_LIBRARY_ABI)` provides USB library reads, stored snapshots,
+  waveform windows, timing helpers and stored-data events. Use `AZ_LIB_HAS`.
+- `observation_service(AZ_OBSERVATION_ABI)` provides copied live state,
+  coherent command targets and deck-status subscriptions. Use `AZ_OBSERVATION_HAS`.
+- `command_service(AZ_COMMANDS_ABI)` manages command ownership, cancellation
+  and completion. Use `AZ_COMMANDS_HAS`.
 
-### Data and command subscriptions
-
-The optional `az_library_v1.on_data_event` delivers track/waveform completion, cancellation,
-failure and invalidation records on the UI thread. Register once from initialization.
-New command clients require `command_submit_async`, `command_acknowledge` and the operation
-capability. They copy and acknowledge `TERMINAL`, then retain context through `RELEASED`.
-There is no command-status polling fallback or release retry. Check each member with
-`AZ_LIB_HAS`. See [callback delivery](13-track-data.md#callback-delivery) and
+See the [track data guide](13-track-data.md) for service contracts.
+`on_data_event` reports [stored ticket changes](13-track-data.md#callback-delivery)
+on the UI thread. Asynchronous commands acknowledge a validated TERMINAL and
+keep callback context through RELEASED. See
 [asynchronous command ownership](13-track-data.md#asynchronous-command-ownership).
 
-Background analysis workers use the optional [track analysis service](18-track-analysis.md)
-to obtain read-only source locators and publish missing grid/phrase/vocal data.
-The v2 opens independently request phrases and PVDI; existing analysis is preserved.
-`vocal_intervals` and `vocal_intervals_loaded` return copied `[start_s, stop_s)` vocal
-segments on a worker, for qualified USB and completed Beatport tracks.
+The [core analysis service](18-track-analysis.md) owns decoding, phrase/vocal
+computation, bounded workers, native publication and linking. Discover it with
+`analysis_service(AZ_ANALYSIS_ABI)` and check `AZ_ANALYSIS_HAS` for each member.
+Requests select qualified sources, components and execution settings; status distinguishes
+admission, saved components and final publication outcomes. Results and vocal intervals
+are copied into caller buffers. No model, decoder, source locator or raw publication
+packet crosses the SDK boundary. The [analysis client](../examples/analysis-client)
+exercises computation and result retrieval through this service.
 
 ## Beatport login service
 

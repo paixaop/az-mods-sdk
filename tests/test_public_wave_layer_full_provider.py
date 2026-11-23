@@ -23,23 +23,22 @@ class FullProvider(unittest.TestCase):
         if not cc:self.skipTest('host C compiler unavailable')
         unit=CORE/'tests/unit/sdktrack_test.c'
         if not unit.is_file():self.skipTest('core ordinary disk fixture unavailable')
-        prefix,separator,_=unit.read_text().partition('int main(void) {')
+        prefix,separator,_=unit.read_text().partition('int main(int argc, char **argv) {')
         self.assertTrue(separator,'ordinary disk fixture main boundary')
-        old='#define az_thread_create pthread_create'
+        old='#define az_thread_create st_test_start_worker'
         self.assertIn(old,prefix)
-        prefix=prefix.replace(old,'#include <time.h>\nstatic int full_create(pthread_t *,const pthread_attr_t *,void *(*)(void *),void *);\nstatic int full_wait(pthread_cond_t *,pthread_mutex_t *,const struct timespec *);\n#define az_thread_create full_create\n#define pthread_cond_timedwait full_wait')
-        prefix=prefix.replace('#undef pread','#undef pthread_cond_timedwait\n#undef pread',1)
+        prefix=prefix.replace(old,'static int full_create(pthread_t *,const pthread_attr_t *,void *(*)(void *),void *);\n#define az_thread_create full_create',1)
         fixture=ROOT/'tests/fixtures/public-wave-layer-full-provider.c'
         probe=pathlib.Path(os.environ.get('AZ_PUBLIC_WAVE_ENGINE_PROBE',ROOT/'examples/wave-layer-probe/probe.c'))
         with tempfile.TemporaryDirectory(prefix='sdk-full-wave-') as temp:
             source=pathlib.Path(temp)/'full.c';binary=pathlib.Path(temp)/'full'
             source.write_text(prefix+'\n#include "'+str(fixture.resolve())+'"\n')
-            link=['-Wl,-export_dynamic'] if sys.platform=='darwin' else ['-rdynamic','-ldl']
+            link=['-Wl,-export_dynamic'] if sys.platform=='darwin' else ['-rdynamic','-ldl','-Wl,--wrap=open,--wrap=pread,--wrap=pthread_cond_timedwait']
             flags=['-fsanitize=address,undefined','-fno-sanitize-recover=all'] if sanitizer else []
             argv=[cc,'-std=gnu11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-missing-field-initializers',*flags,
                   '-I'+str(CORE/'src/azmod'),'-I'+str(CORE/'tests/unit'),'-I'+str(ROOT/'include'),
                   '-DLIB_INC="'+str((CORE/'src/azmod/sdk_lib.c').resolve())+'"',
-                  '-DPUBLIC_WAVE_PROBE_IMPL="'+str(probe.resolve())+'"',str(source),'-pthread','-lm','-lsqlite3',*link,'-o',str(binary)]
+                  '-DPUBLIC_WAVE_PROBE_IMPL="'+str(probe.resolve())+'"',str(source),str(CORE/'src/azmod/track_service.c'),str(CORE/'src/azmod/track_storage.c'),str(CORE/'src/azmod/sdk_command_service.c'),str(CORE/'src/azmod/sdk_command_engine.c'),'-pthread','-lm','-lsqlite3',*link,'-o',str(binary)]
             built=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=60)
             self.assertEqual(built.returncode,0,built.stdout+built.stderr)
             delays=[int(n) for n in os.environ.get('AZ_PUBLIC_FULL_DELAYS','0,2500').split(',')]

@@ -18,10 +18,10 @@ static struct {
 static char lines[8][112];
 static int supported(void)
 {
-    return AZ_LIB_HAS(library, command_submit_async) && library->command_submit_async &&
-           AZ_LIB_HAS(library, command_acknowledge) && library->command_acknowledge &&
-           AZ_LIB_HAS(library, data_capabilities) && library->data_capabilities &&
-           AZ_LIB_HAS(library, deck_snapshot) && library->deck_snapshot;
+    return AZ_COMMANDS_HAS(commands, command_submit_async) && commands->command_submit_async &&
+           AZ_COMMANDS_HAS(commands, command_acknowledge) && commands->command_acknowledge &&
+           AZ_OBSERVATION_HAS(observation, data_capabilities) && observation->data_capabilities &&
+           AZ_OBSERVATION_HAS(observation, deck_snapshot) && observation->deck_snapshot;
 }
 static void draw(az_draw *d, az_rect area, void *user)
 {
@@ -59,7 +59,7 @@ static void terminal_received(const az_command_completion *c)
     command.terminal_seen = 1;
     snprintf(lines[3], sizeof lines[3], "Request %llu: outcome %u, reason %d",
              (unsigned long long)command.id, c->result.outcome, c->result.reason);
-    int rc = library->command_acknowledge(ID, command.id);
+    int rc = commands->command_acknowledge(ID, command.id);
     if (rc == AZ_OK) {
         command.phase = WAIT_RELEASED;
         snprintf(lines[5], sizeof lines[5], "%s", c->settled ? "Acknowledged; cleanup pending" : "Acknowledged; native settlement and cleanup pending");
@@ -90,7 +90,7 @@ static void complete(const az_command_completion *c, void *user)
 static int exit_available(void)
 {
     az_data_capabilities caps = { .size = sizeof caps };
-    return supported() && library->data_capabilities(&caps) == AZ_OK &&
+    return supported() && observation->data_capabilities(&caps) == AZ_OK &&
            caps.version == AZ_DATA_VERSION && (caps.commands & (UINT64_C(1) << AZ_CMD_LOOP_EXIT));
 }
 
@@ -122,7 +122,7 @@ static int command_clock(uint64_t *ns)
 static void submit_command(az_command_request request)
 {
     az_command_result result = { .size = sizeof result };
-    status = library->command_submit_async(ID, &request, complete, &command, &result);
+    status = commands->command_submit_async(ID, &request, complete, &command, &result);
     if (status == AZ_OK) {
         command.id = request.request_id;
         command.phase = WAIT_TERMINAL;
@@ -145,7 +145,7 @@ static void issue_exit(void)
         return;
     }
     az_deck_snapshot deck = { .size = sizeof deck };
-    int rc = library->deck_snapshot(0, &deck);
+    int rc = observation->deck_snapshot(0, &deck);
     uint64_t ns;
     if (!command_clock(&ns)) {
         status = AZ_FAILED;
@@ -178,8 +178,10 @@ static int input(const az_event *event, void *user)
 
 static int init(const az_core_v1 *c)
 {
-    if (!AZ_HAS(c, library_service)) return -1;
+    if (!AZ_HAS(c, library_service) || !AZ_HAS(c, observation_service) || !AZ_HAS(c, command_service)) return -1;
     library = c->library_service(AZ_LIBRARY_ABI);
+    observation = c->observation_service(AZ_OBSERVATION_ABI);
+    commands = c->command_service(AZ_COMMANDS_ABI);
     core = c;
     snprintf(lines[0], sizeof lines[0], "Cue and loop command results");
     snprintf(lines[4], sizeof lines[4], "Click to EXIT the loop on deck 1, when available");

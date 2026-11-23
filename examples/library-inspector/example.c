@@ -4,6 +4,8 @@
 #include "pages.h"
 #include <time.h>
 const az_library_v1 *library;
+const az_observation_v1 *observation;
+const az_commands_v1 *commands;
 static const az_core_v1 *core;
 static const library_page *const pages[] = {
     &library_page_cues, &library_page_live, &library_page_analysis, &library_page_control
@@ -64,9 +66,11 @@ static void tick(void)
 }
 static int init(const az_core_v1 *c)
 {
-    if (!AZ_HAS(c, library_service)) return -1;
+    if (!AZ_HAS(c, library_service) || !AZ_HAS(c, observation_service) || !AZ_HAS(c, command_service)) return -1;
     library = c->library_service(AZ_LIBRARY_ABI);
-    if (!AZ_LIB_HAS(library, data_capabilities) || !AZ_LIB_HAS(library, deck_snapshot)) return -1;
+    observation = c->observation_service(AZ_OBSERVATION_ABI);
+    commands = c->command_service(AZ_COMMANDS_ABI);
+    if (!AZ_OBSERVATION_HAS(observation, data_capabilities) || !AZ_OBSERVATION_HAS(observation, deck_snapshot)) return -1;
     core = c;
     for (unsigned i = 0; i < 4; i++)
         if (pages[i]->init(c)) return -1;

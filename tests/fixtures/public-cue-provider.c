@@ -6,18 +6,18 @@
 #include SDK_CUE_PROVIDER_FIXTURE
 #include <stdarg.h>
 #include <stdlib.h>
-static struct {
-    int ok;
-} g_sdk_sq;
+#include "library_sql.h"
+static const struct az_library_sql g_sdk_sq;
+const struct az_library_sql *az_storage_sql(void) { return &g_sdk_sq; }
 #include SDK_CUE_CAPABILITIES
 static unsigned client_starts, client_logs, client_mode;
 static void *(*client_worker)(void *);
 static void *client_arg;
 static char client_lines[32][768];
-static const az_library_v1 client_library = { .abi = AZ_LIBRARY_ABI, .size = sizeof client_library, .data_capabilities = sdk_data_capabilities, .deck_snapshot = sd_deck_snapshot_v1 };
-static const az_library_v1 *client_service(uint32_t abi)
+static const az_observation_v1 client_library = { .abi = AZ_OBSERVATION_ABI, .size = sizeof client_library, .data_capabilities = sdk_data_capabilities, .deck_snapshot = sd_deck_snapshot_v1 };
+static const az_observation_v1 *client_service(uint32_t abi)
 {
-    assert(abi == AZ_LIBRARY_ABI);
+    assert(abi == AZ_OBSERVATION_ABI);
     return &client_library;
 }
 static int client_subscribe(const char *id, void (*fn)(int, int, void *), void *user)
@@ -67,6 +67,7 @@ int main(int argc, char **argv)
     assert(argc == 3);
     int expected_support = atoi(argv[1]);
     client_mode = (unsigned)atoi(argv[2]);
+    track_service_configure(1);
     sdk_deck_tick(100); /* Resolve the actual provider function slots as GUI collection does. */
     az_data_capabilities capabilities = { .size = sizeof capabilities };
     assert(sdk_data_capabilities(&capabilities) == AZ_OK);
@@ -80,7 +81,7 @@ int main(int argc, char **argv)
     puts("REAL_CUE_PROVIDER_EMPTY: all4 unknown, actual data_capabilities/snapshot ran");
     fflush(stdout);
     if (client_mode == 1) g_cm_loading = 1;
-    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .library_service = client_service, .on_deck_event = client_subscribe, .thread_start = client_thread, .log = client_log };
+    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .observation_service = client_service, .on_deck_event = client_subscribe, .thread_start = client_thread, .log = client_log };
     int rc = az_mod_v1_entry()->init(&core);
     if (client_mode == 1) {
         assert(rc == -1 && !client_starts && !client_worker);

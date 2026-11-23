@@ -1,117 +1,36 @@
-# Core library service development contract
+# Track data and native commands
 
-SDK data, live/loop readers, load tracking, and all implemented cue/loop command
-adapters start by default on supported firmware. No development `.on` files are
-required. These are runtime startup defaults, not SDK-header or compile-time
-options; the standard core build includes the producers.
+The mod ABI is 2. Rebuild ABI 1 packages for this header. Discover each service
+with `AZ_HAS` and use the member guard before calling it.
 
-For diagnosis, an explicit `/home/root/settings/azmod.<service>.off` file disables
-that service after restarting EP147. Services are `track-data`, `native-load`,
-`native-live`, `native-loop`, `native-cue-commands`, `native-exit`,
-`native-reloop`, and `native-loop-commands`. `track-data.off` disables the legacy
-snapshot/data and command services; `native-load.off` disables their native
-command backend. Passive deck-status subscriptions remain independently enabled
-unless `azmod.deck-status.off` exists. Source/connection observers already start
-by default with passive status. Diagnostic logging and experimental probes keep
-their separate switches.
+| Getter | Member guard | Responsibility |
+| --- | --- | --- |
+| `library_service(AZ_LIBRARY_ABI)` | `AZ_LIB_HAS` | USB library enumeration, stored data and waveform tickets, events and timing |
+| `observation_service(AZ_OBSERVATION_ABI)` | `AZ_OBSERVATION_HAS` | Copied deck state, cue snapshots, coherent command targets and status subscriptions |
+| `command_service(AZ_COMMANDS_ABI)` | `AZ_COMMANDS_HAS` | Commands, cancellation, completion and result ownership |
+| `analysis_service(AZ_ANALYSIS_ABI)` | `AZ_ANALYSIS_HAS` | [Phrase and vocal analysis](18-track-analysis.md) |
 
-Startup still validates the firmware profile, hook installation and ownership.
-Mods must query capabilities and field availability, and preserve generation and
-revision fences. Enabling a service does not make an unsupported source or
-operation available, or enable a mod's own automation preference.
-
-All 28 command IDs have development paths for testing native loop and cue operations. Deck-status listeners are a separately negotiated part of the service and use their own firmware and source checks.
-The support matrix in [track-data support](14-track-data-support.md) records those gaps.
-
-## Compatibility
-
-`az_core_v1` only grows at its end. Existing fields and `AZ_MOD_ABI` are unchanged. The core
-and SDK public headers are identical. `AZ_HAS(core, field)` is required for every new entry;
-then check `data_capabilities` and the individual component/field validity. The development
-baseline is core 1.2.3. Deck-status subscriptions require core 1.2.6 and availability of both
-status members in the library service table. Gate individual fields on their support and validity.
-
-New v1 output structures require at least their complete v1 size, except `deck_snapshot`
-also accepts its earlier development prefix through `main_cue`. Too-small output buffers
-are rejected without writes. Larger buffers keep their unknown tails and their caller-set
-size. Input references and requests require version `AZ_DATA_VERSION`. The immutable
-snapshot includes its own size and version. The old `azstem_deck_snapshot` export and its
-exact size check are unchanged. New loaded observations use a separate versioned export,
-`azstem_deck_observation_v1`; loop notifications have another independent versioned export.
-Mixed library versions report absent fields unavailable.
+Service tables are core-owned for the process lifetime. Initialize records
+with the required size and version. Check operation capabilities and field
+validity for each source and load. See the [support matrix](14-track-data-support.md).
 
 ## Identity and stored data
 
-A mod worker calls `track_resolve(id, stick, content_id, &ref)` using an ID obtained from that
-stick's library. This produces a source-qualified reference without loading a deck. Resolution
-establishes the source connection; a nonexistent content row is rejected by the background
-load. Stick numbers are physical USB ports 0 and 1, resolved by the existing sysfs mechanism.
-Ambiguous ports, escaped mount paths, hubs with unknown ports and absent libraries fail.
+Use `track_resolve(id, stick, content_id, &ref)` on a mod worker with a content
+ID from the same USB library. Stick 0 is USB 1 and stick 1 is USB 2. The source
+and connection generation distinguish the same content ID across ports and
+reconnects. Keep the complete reference and resolve it again after invalidation
+or a process restart.
 
-`source_id` identifies a port in this core session. `source_generation` changes when the
-observed mount identity, database inode or connection changes. The provider checks Linux's
-mount ID as well as the mount path, so a reconnect between polls with a different mount ID
-is detected. Mount IDs and stat fingerprints are operating-system identity/freshness signals,
-not cryptographic identities. The rare reuse of every identity input without an intervening
-observation cannot be detected. `library_id` identifies the database inode in its connection;
-it is not rekordbox's permanent library UUID. References must not be persisted across restarts.
-Duplicate content IDs on different sources are distinct cache keys.
+`track_request` queues a component mask without file I/O. `track_acquire` returns
+a borrowed immutable snapshot when ready. The pointer and nested arrays remain
+valid until `track_release`, even after cancellation or invalidation. A new
+acquisition on an invalidated ticket returns `AZ_STALE`. Release cancelled tickets
+and any acquired tickets before returning an initialization failure.
 
-`track_request` queues a component mask and returns a ticket. It does no file I/O. Multiple
-consumers requesting the same reference and mask share one immutable result. Register
-`on_data_event` in `init` to receive completion, then call `track_acquire` for the ticket.
-Alternatively poll `track_acquire`; `AZ_PENDING` means loading, `AZ_BUSY` means retry later. `AZ_OK`
-returns a borrowed immutable pointer. Copy small display values, then release the ticket.
-All nested arrays have that pointer's lifetime. Do not edit them or retain them after release.
-
-At most four tickets per mod and 32 in total pin up to eight snapshots. Tickets cannot be
-used by another mod. Cancellation affects only that consumer; it does not interrupt another
-consumer's read. Cancelled tickets still need release. Pointers already acquired remain
-readable through cancellation or invalidation until release. Invalidation makes subsequent
-acquisitions return `AZ_STALE`; it never frees pinned memory. Release a stale ticket and
-resolve/request again. Repeated acquisition of one ticket does not add a pin.
-If `init` fails, the core retires that mod's data owner and reclaims tickets that
-were never acquired. Release acquired tickets before returning failure: pointers
-already handed out stay pinned because the mod may have started a thread.
-
-A single core worker owns allocations, file reads, parsing and eviction. Each file is limited
-to 16 MiB; an ANLZ pair has at most 32 MiB of input, plus fewer than 8 MiB for eight decoded
-snapshots. The parser caps beats at 32768, phrases at 1024, cues at 256 and overview bytes at
-4096. Unpinned cache entries are evicted by recency. Cache operations use try-locks and return
-`AZ_BUSY` instead of waiting. File paths are resolved inside the selected mount; the provider
-rejects paths that escape through parent traversal or symlinks. Reads use close-on-exec file
-descriptors. Files are not opened on playback, input or paint callbacks.
-
-The worker checks source and file fingerprints before publication and on subsequent sweeps.
-The database and both analysis filenames participate, including a missing EXT that later
-appears. Original source-relative analysis paths are checked alongside their resolved targets,
-so retargeting an in-source symlink invalidates a pinned snapshot without freeing its memory.
-Analysis requests reject database paths that exceed the provider's 1023-byte limit with
-`AZ_LIMIT`; metadata-only requests remain independent of that limit. Analysis readers open
-without waiting for special-file peers and reject nonregular files before reading them.
-Metadata-only requests do not read ANLZ files. File changes during a read cause a
-stale result rather than a mixed result. A nonempty WAL or rollback journal makes the new
-provider unavailable/stale: immutable reads must not silently ignore committed sidecar data.
-The database itself, as well as analysis paths, must resolve inside its source mount. Fingerprints are best-effort observations, so they do
-not replace native edit notifications. There is no hard freshness deadline: large file reads
-or slow media delay sweeps. `AZ_DECK_CUES_CHANGED` is a separate native cue-set
-invalidation event delivered by `on_deck_event` on the UI thread when the native-live
-observer is enabled. Pending changes are coalesced per owned player registration;
-retirement invalidates its previous receipt. The event includes load/reset changes
-and does not establish a save, cue classification, or source/load identity. Saved-file
-cache invalidation and loaded-data precedence remain future work. Saved file data
-never claims to reflect unsaved native edits.
-
-After collection, `deck_snapshot` exposes `cue_unit_generation`, `cue_revision`
-and `cue_observed_ns` under `AZ_LIVE_CUE_REVISION`. These are the cue listener's
-registration lifetime, core collection counter and monotonic GUI collection time.
-The original loaded-track `revision` is independent. Polling a snapshot does not
-drain native changes or advance the cue counter; a pending callback becomes
-observable after a GUI tick. Retirement or disabling the observer clears validity.
-Check the caller's snapshot size before reading these appended fields.
-The cue bit in `data_capabilities.live_fields` reports active observer registration
-independently of whether its first receipt has arrived. Register during `init` and
-check the snapshot's validity for current data when a change arrives.
+Stored data describes the saved edition. The provider checks database, source
+and analysis-file identity before publication and during freshness sweeps.
+Use [loaded deck status](17-deck-status.md) for current native observations.
 
 ## Availability, provenance and timing
 
@@ -143,8 +62,7 @@ remains unknown. Loaded native phrase maps use the same PSSI mood domain: 1 (hig
 zero-based mood enum before exposing `raw_mood`, so file and loaded-track selectors
 use identical values. Version and stride are separate 16-bit fields. An unknown version marks
 phrases unsupported while other valid requested components remain usable; malformed lengths
-still fail the read. Version 1 has documented/synthetic coverage and awaits a natural export.
-Beat positions are zero-based fractional indexes. Timing helpers interpolate
+still fail the read. Beat positions are zero-based fractional indexes. Timing helpers interpolate
 between adjacent grid times and reject extrapolation. They therefore handle changing tempo
 and off-grid interval boundaries. Source seconds and beat length are separate from estimated
 playback seconds at the caller's explicit positive rate. A zero rate leaves playback duration
@@ -155,54 +73,6 @@ and its approximate seconds-per-sample uses the library duration divided by samp
 The database duration is rounded to seconds; this is not precise waveform timing. Without a
 usable duration the overview waveform is unavailable. Raw mono/RGB/three-band detail and
 all previews use the separate bounded-window service below.
-
-Master Tempo is available under `AZ_LIVE_MASTER_TEMPO` after a valid native KeyLock
-receipt. Both admitted firmware builds register a `MasterTempoSetter` that maps this
-receipt to the MasterTempo setting and maps the setting back to `setMasterTempo(bool)`.
-`master_tempo` is 0/1, or -1 without validity; its receipt identity/time are
-`live_unit_generation`, `key_lock_revision` and `key_lock_observed_ns`. This independent
-setting does not establish source/load identity or audible time-stretch behavior.
-
-`AZ_LIVE_SYNC` describes the independent Sync enabled setting: native mode0 is off,
-mode2 is on; mode1 and other values remain unavailable. Without validity, `sync`
-is-1. The appended `sync_raw_mode`, `sync_unit_generation`, `sync_revision` and
-`sync_observed_ns` identify that receipt, including an invalid observed mode.
-This setting does not establish beat lock, master role or a track load. Its
-private export is separate, preserving the fixed live-v1 ABI.
-
-## One shared library service
-
-Obtain `const az_library_v1 *library = core->library_service(AZ_LIBRARY_ABI)` after checking
-`AZ_HAS(core, library_service)`. An unsupported ABI returns NULL. Check individual members
-with `AZ_LIB_HAS(library, member)` before calling them. The table stays valid for the process
-lifetime; track and waveform snapshots retain their separate ticket lifetimes.
-
-This one core-owned service provides library enumeration, source qualification, stored
-analysis, live snapshots, timing, events and command submission. Every consumer shares the
-same bounded cache, ticket quotas and source lifecycle. Native observation crosses the
-existing internal azstem bridge; consumers require no private firmware addresses or hooks.
-The individual development entries in `az_core_v1` remain compatibility aliases to the same
-functions and state. New clients use the single versioned service table.
-
-`examples/library-inspector` is one diagnostic client with Cues, Live, Analysis and Control
-pages. It implements display and input only; the functionality remains in the core service.
-It replaces the four separate demonstration mods. Command buttons still follow capabilities,
-so an unavailable native operation performs no action.
-
-The [wave-layer probe](../examples/wave-layer-probe/README.md) exercises raw PWV7 and
-derived layered windows through this public service from a managed worker. It selects
-public USB1 port0, resolves a returned library track, checks payload reconstruction,
-provenance, reserved bytes and window bounds, and releases its tickets. Its structured
-results support controlled normal-loader acceptance of encoding8.
-
-```c
-static const az_library_v1 *get_library_service(const az_core_v1 *core)
-{
-    if (!AZ_HAS(core, library_service)) return NULL;
-    const az_library_v1 *library = core->library_service(AZ_LIBRARY_ABI);
-    return AZ_LIB_HAS(library, data_capabilities) ? library : NULL;
-}
-```
 
 ## Detailed waveform windows
 
@@ -268,127 +138,27 @@ returns `AZ_INVALID`. Arrays remain immutable and pinned until release even afte
 Events identify the waveform component and ticket; asynchronous failures use the existing
 status codes. No file work occurs in a draw, playback or native notification callback.
 
-The library inspector's Analysis page shows a selected bounded stored waveform when available, preserving the
-raw overview fallback for an older core. The representation is stored analysis and does not
-claim calibrated player colors or audio amplitude. Format and timing provenance comes from
-[primary ANLZ research](https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/anlz.html#waveform-detail)
-and [the primary WaveformDetail implementation](https://github.com/Deep-Symmetry/beat-link/blob/main/src/main/java/org/deepsymmetry/beatlink/data/WaveformDetail.java),
-corroborated against the supplied files.
-
 ## Observations, events and commands
 
-Subscribe to [real-time deck status](17-deck-status.md) for loaded-deck changes including physical loop edits. The stored ticket journal, legacy deck events and command completion each have their own catch-up and lifetime rules.
+Use [status subscriptions](17-deck-status.md) for loaded deck changes and
+`deck_snapshot` or `native_cues` for bounded copies. Unit identity, USB
+source identity, snapshot revision and native load generation describe
+separate lifetimes. A same-track reload produces a new load generation.
 
-`deck_snapshot` exposes authoritative loaded/empty state from the copied
-LoadedTrackInfo, together with the capture time and its observation revision. A sequence-lock
-collision yields no valid fields and can be retried. A capture revision is **not** a load
-generation. The new API does not expose a playhead without a load association, or treat the
-legacy forward-movement heuristic as paused/playing state.
+For snapshot reads, check both the outer live-field bit and nested validity.
+For example, a loop can report engagement before `AZ_LOOP_BOUNDS` is valid.
+Master Tempo and Sync enabled are independent settings. Raw play flags carry
+native notification values. Use the status subscription for normalized transport
+and check the freshness of each copied receipt before acting on it.
 
-The native loop listener starts by default unless `azmod.track-data.off` or
-`azmod.native-loop.off` exists at startup. The existing player constructor/destructor
-hooks must both install at their expected entries. It registers through
-the owned native notification server's virtual interface, with both-build layout/RTTI guards
-and explicit C strong/weak ownership matching the native ABI. No additional absolute hook address is introduced.
-The C implementation uses an assembly boundary for native unwinding and the firmware’s existing ABI runtime.
+For a command based on a loaded status event, pass its native load epoch to
+`command_target` on the observation table. The copied target qualifies the
+current load, cue revision, source clock and command capabilities together.
+A changed target returns `AZ_STALE` and a missing observation returns
+`AZ_PENDING`. The command service verifies target identity during execution.
 
-When available, `AZ_LIVE_LOOP_ENGAGED` and `loop.valid & AZ_LOOP_ENGAGED` describe the
-native notification's current working-loop validity. Registration may be asynchronous and
-initial replay is unverified, so a registered capability can still have no valid observation.
-The listener applies the same five scalar validity checks as native `isActiveLoopPlay`.
-EXIT clears this working property while retained cue slots remain separate. The leading
-notification byte describes a different mode and is ignored; hardware testing exposed the
-earlier incorrect interpretation.
-
-`AZ_LIVE_LOOP_BOUNDS` reports support for current working IN/OUT coordinates. Check
-`loop.valid & AZ_LOOP_BOUNDS` on each observation before reading `in_s` or `out_s`.
-Both are source seconds; zero IN is valid. Availability requires both native position
-predicates, matching source tuples and borrowed source associations, positive equal Hertz,
-forward nonnegative sample positions, verified native class identities and consistent cached
-microseconds. The inspected native sample-first setters round cached microseconds to nearest,
-ties away from zero. SDK consistency allows one sample at the record's Hertz plus half a
-microsecond of cache rounding. It compares `2 * abs(samples * 1000000 - cached_us * Hertz)`
-with `2000000 + Hertz` using wide integer arithmetic, separately for IN and OUT. This is a
-resolution-aware SDK policy, not a claim that every native writer uses the same conversion.
-Published seconds always come from samples/Hertz; the cache never replaces or snaps them.
-A fixed millisecond tolerance is not used. An engaged loop may temporarily have unavailable bounds. EXIT invalidates current bounds; it does not
-establish whether retained points exist. Defined state, reloop availability, mode and saved
-association remain invalid. No native pointer or owning cue property is retained.
-
-The private `azstem_loop_observation_v2` export adds bounds and certifies this decoder.
-The original 40-byte v1 export stays compatible. New azmod requires v2, leaving loop fields
-unavailable with an older experimental azstem rather than trusting its superseded reader.
-
-`loop_observed_ns` is the core callback's receipt time, not the native source capture time.
-`loop_revision` counts core publications and `loop_unit_generation` identifies a player-unit
-registration. Neither is a track-load generation. Loaded and loop observations are separate
-streams; the loop notification does not establish a source-qualified track association.
-Native callbacks from retired units cannot publish into a replacement generation. The listener's validation limits are recorded separately; default startup does not
-establish acceptance on physical hardware.
-
-The native live listener starts by default unless `azmod.track-data.off` or
-`azmod.native-live.off` exists at startup. It publishes raw play notification
-flags (`AZ_LIVE_PLAY_FLAGS`), quantize (`AZ_LIVE_QUANTIZE`) and raw key lock
-(`AZ_LIVE_KEY_LOCK`) through checked weak native interfaces. Inspect each validity bit
-before reading its values. `live_unit_generation` names the player registration;
-`play_revision/play_observed_ns`, `quantize_revision/quantize_observed_ns` and
-`key_lock_revision/key_lock_observed_ns` are independent receipt streams. They do not
-establish a loaded-track or source association.
-
-`play_mode_is_2`, `play_pause` and `play_aux` preserve the three native bytes without naming
-paused, playing or cueing semantics. The native notification is triggered by a change to
-`play_pause` only; mode and auxiliary flags are context and can change without a notification.
-Normalized `AZ_LIVE_PLAYBACK` remains unavailable. A strict 0/1 KeyLock receipt also qualifies
-the Master Tempo setting described above. Invalid raw scalars are -1. No initial replay is
-promised; registration can succeed before the first valid receipt. The private
-`azstem_live_observation_v1` export and public
-projection preserve independent validity and caller buffer sizes.
-
-`AZ_LIVE_TEMPO` exposes the native GUI's tempo-adjusted BPM in `tempo`, using
-the existing conservative range `20 < BPM < 400`. It is neither pitch percent
-nor playback rate. The GUI polls an owned `BpmState` and publishes a copied
-receipt about every250ms; public readers never dereference the native object or
-wait for the publisher. `tempo_state_generation`, `tempo_revision` and
-`tempo_observed_ns` identify that BPM-state observation. A poll that finds
-invalid or retired native state clears validity; a contended public read or
-unobserved state leaves the bit clear and `tempo` zero. Inspect the receipt age:
-the last copied value remains observable until the next successful poll. This
-state generation is independent of player-unit and track-load generations.
-
-`AZ_LIVE_TEMPO_SLIDER_LOCKED` supplies the separate native slider-lock setting
-in `tempo_slider_locked` (0/1, otherwise -1). Its independent receipts use
-`tempo_lock_unit_generation`, `tempo_lock_revision` and `tempo_lock_observed_ns`.
-It requires the native-live observer flag, has no initial replay, and does not
-establish confirmed master selection, playback rate or track identity.
-
-`AZ_LIVE_NATIVE_LOAD` exposes `native_load_generation` from a successful native
-completion matched to its observed request. `native_load_unit_generation`,
-`native_load_invalidation_epoch` and `native_load_observed_ns` identify that
-independent receipt. A same-track reload gets a new generation; pending,
-failed, unloaded or retired state has no valid native generation. This requires
-the default native-load observer. It leaves `load_generation` and `track`
-unavailable: it does not qualify a USB/library source, join LTI metadata or
-supply a source-qualified command target. Transient loop commands explicitly accept this
-generation with `AZ_COMMAND_NATIVE_LOAD`. Check the validity bit and
-compare streams only using identities they actually share.
-
-`AZ_LIVE_MASTER` reports the confirmed local master from the existing native
-post-exchange event. Every deck snapshot shares `master_revision` and
-`master_observed_ns`; `master` is1 for the selected local deck and0 for the
-other three. Before a confirmation, or after a malformed/foreign member, bad
-clock or contended publication, the bit is clear and `master` is-1. Readers
-never wait for a callback. This event is independent of Sync enablement, a
-master-change request, playback and track-load identity.
-
-`data_event` polls a 64-entry ordered journal, scoped to the calling mod. Publication occurs
-under the same lock after the snapshot becomes acquirable. Sequence and revision numbers
-correlate results with tickets. Poll from a mod tick or worker and keep the last sequence.
-`AZ_EMPTY` means no newer event; `missed=1` means refresh outstanding state. Journal
-sequence exhaustion returns `AZ_LIMIT` after the last available cursor; it never
-wraps or reuses a cursor. Existing tickets remain usable. The journal may
-coalesce history by dropping old entries. There are no guaranteed beat or loop-iteration
-events. Deck observation and command events in this journal are reserved and are not emitted
-yet. Poll deck state directly; command completion has its own callback below.
+Saved writes require `AZ_COMMAND_PERSIST`. Commands that select native cue IDs
+require `AZ_COMMAND_NATIVE_CUE_IDS` and the exact `native_cues` revision.
 
 ### Callback delivery
 
@@ -421,15 +191,15 @@ handling `AZ_LIMIT` through the polling API; it cannot wrap into a fresh sequenc
 
 ### Asynchronous command ownership
 
-New clients require both appended `command_submit_async` and `command_acknowledge` members,
-plus the operation capability. An older table leaves the action unavailable. There is no
+New clients require both `command_submit_async` and `command_acknowledge` and
+the operation capability. Check members with `AZ_COMMANDS_HAS`. A missing
+member leaves the action unavailable. There is no
 fallback to command-status polling, the command journal, or legacy release retries.
 The older `command_submit`, `command_poll`, `command_cancel`, `command_release` and
 `on_command_complete` slots remain for binary compatibility; they do not implement the
 new acknowledgement and cleanup contract.
 
-Submit directly from initialization or a UI callback. Authenticate the original mod caller
-at each public service boundary. The callback must be non-null and belong to that mod's
+Submit directly from initialization or a UI callback. The callback must be non-null and belong to that mod's
 executable code. Requests and synchronous outputs are copied; they need complete v1 capacity,
 and a larger caller retains its size and unknown tail. Unknown flags, reserved fields,
 non-finite coordinates and unterminated comments are invalid.
@@ -483,45 +253,11 @@ Worker `post_ui` is only a best-effort request to initiate later. Its void retur
 establish admission, refusal, accepted ID ownership or a future command callback. The queue
 can drop a job and report no application-visible result. Keep an unconfirmed scheduling
 context valid for process lifetime. A delivered UI job validates the current target and
-publishes the actual async call result using thread-safe mod state. This milestone supplies
-no reliable worker handoff API. Examples requiring reliable initiation submit directly from
-initialization or UI input; the inspector Control page does this. The file-driven probes
-use best-effort initiation and explicitly retain dropped-job context.
+publishes the actual async call result using thread-safe mod state. Submit from initialization or UI input when
+immediate confirmation of admission is needed.
 
 The [inspector Control page](../examples/library-inspector/control.c) demonstrates validation,
 refusal handling, malformed successful replies, one acknowledgement and released cleanup.
-The following helpers are optional and make no service or clock calls:
-
-```c
-#include "azmod-data-helpers.h"
-
-static int inspect_loop(const az_deck_snapshot *snapshot, uint32_t deck, uint64_t now_ns)
-{
-    int engaged = -1;
-    double in_s = 0, out_s = 0;
-    int has_engagement = az_read_loop_engaged(snapshot, deck, now_ns, &engaged);
-    int has_bounds = az_read_loop_bounds(snapshot, deck, now_ns, &in_s, &out_s);
-    /* A zero engagement or IN is valid; failed predicates preserve outputs. */
-    return has_engagement && has_bounds;
-}
-```
-
-Call deck readers only after a successful snapshot read, with a monotonic clock sampled
-afterwards. They check deck/version/capacity, outer and nested validity, stream identity,
-revision and nonzero observation time no later than `now_ns`. They add no age threshold.
-`az_read_native_load_target` returns only the native generation; a USB track reference
-cannot substitute. `az_command_result_matches` validates correlation and known outcome,
-without proving admission, application or completion-envelope validity.
-
-Native cue commands start by default unless `azmod.native-cue-commands.off` is
-present before startup. The former `.on` flag is no longer needed.
-MAIN_SET/RECALL and HOT_TRIGGER use the native
-control path; saved/hot/memory writes and metadata changes use the native cue
-actor and persistence queues. Read `native_cues` for revision-scoped native IDs.
-Selected operations require `AZ_COMMAND_NATIVE_CUE_IDS`; saved writes require
-`AZ_COMMAND_PERSIST`. Use native quantization and a valid native load generation.
-These are implementation paths, not a claim that every firmware/deck runtime test
-has passed. Test actual seek/loop/transport effects and saved reload/restart behavior.
 
 ### Create cues at explicit source positions
 
@@ -566,17 +302,13 @@ an explicitly approved replacement workflow. Its original unfenced calling form
 remains supported. Application-level overwrite approval and automatic-placement
 policy belong to the mod; the SDK does not silently replace occupied pads.
 
+### Transient loop commands
 
-Transient loop operations 1–12 use the shared asynchronous native backend for
-both firmware profiles and start by default. Explicit `azmod.track-data.off` or
-`azmod.native-load.off` disables the command backend at startup.
-`azmod.native-loop-commands.off` disables the ten control/adjustment operations;
-EXIT and RELOOP have separate `azmod.native-exit.off` and
-`azmod.native-reloop.off` diagnostic switches. Check each operation's capability bit.
-
-Use `AZ_COMMAND_NATIVE_LOAD`, a valid snapshot `native_load_generation`, zero
-`expected_revision`, and `AZ_QUANTIZE_NATIVE`. Unused numbers, cue selectors,
-color and comment must be zero/empty. No public structure layout changes.
+Use `AZ_COMMAND_NATIVE_LOAD`, a valid native load generation, zero
+`expected_revision` and `AZ_QUANTIZE_NATIVE`. Leave unused arguments and
+selectors zero or empty. Boundary adjustments require an engaged loop.
+IN and MOVE can also update the selected retained cue. Dispatch may
+reposition playback.
 
 | Operation | Arguments and behavior |
 | --- | --- |
@@ -592,80 +324,11 @@ color and comment must be zero/empty. No public structure layout changes.
 | Adjust IN | Signed nonzero `position_s` delta in source seconds; other numeric arguments zero. |
 | Adjust OUT | Signed nonzero `end_s` delta in source seconds; other numeric arguments zero. |
 
-Adjustments require an engaged loop with coherent source points. IN adjustment
-and MOVE additionally require native default-cue selection (kind0) and mode380
-equal to zero; other selections/modes are rejected before dispatch. Native minimum
-policy0 enforces approximately13.33ms. OUT/length use native LoopType1 to skip
-the selected-retained-cue copy branch. Beat-length application can still
-synchronize the temporary default cue with the working loop; callers must not
-assume that temporary cue stays unchanged. IN has no LoopType argument: its native
-route can copy the working cue into the selected retained cue; MOVE inherits
-this side effect. These are transient native edits, not verified saved-track
-persistence. Native operations can reposition playback.
-
-All operations share per-deck FIFO ordering, load/lifetime checks, deadlines,
-cancellation and correlated Slip/BeatSync/Quantize descendant tracking. Use
-`command_submit_async` and acknowledge its validated terminal callback; await `RELEASED`. `ACCEPTED` can span
-processing frames. `APPLIED` requires settled descendants and the operation's
-checked postcondition on the same load; clamped/no-op or partial adjustments
-cannot count as successful exact edits. Its revision is the shared transient
-confirmation counter, independent of deck, loop and database revisions.
-Cancellation after dispatch cannot undo an audible operation. Firmware/hardware
-acceptance remains pending; static mappings and host fixtures do not establish
-deck execution.
-
-Both submission modes validate reserved bits, finite numbers and terminated comments.
-Other operations return `AZ_UNSUPPORTED` with a correlated rejected result;
-malformed requests return `AZ_INVALID` with output unchanged. Poll/cancel/release
-authenticate mod ownership and return `AZ_STALE` for unknown requests. A refused
-submission creates no retained request. Cancellation before native execution
-prevents the call; after the execution claim it may return pending.
-
-The core now has one bounded command store and a separately tested policy engine for
-per-deck ordering, exact retry comparison, owner quotas, deadlines, cancellation and
-immutable terminal outcomes. Accepted IDs must increase per mod and cannot be reused after
-release. An in-flight timeout remains uncertain and keeps its deck fenced until a trusted
-adapter proves execution settled. These mechanisms have synthetic adapter and regression
-coverage. Transient loop commands add native asynchronous execution, descendant lifetime tracking
-and checked operation postconditions. Native cue/persistence implementations need their own
-behavioral, reload/restart and firmware/deck tests. Physical-control ordering remains unverified. Check service size before using appended
-entries and check command capabilities before submitting.
-
-Native support must first supply state readers, owning-thread dispatch, exact signatures,
-object lifetime rules and build mappings for every advertised operation. Required table
-entries need both build mappings; optional features use the existing optional-feature pattern.
-The core's `tools/ep147-addrgen.py` validates reviewed mappings against both
-exact stock firmwares and regenerates the address tables. Update its mapping
-catalog and run generation/check mode; never hand-edit generated tables.
-
-## Local real-file probe
-
-With a user-owned ANLZ sample directory, run `ANLZ_SAMPLE_DIR=/path/to/samples SAN=asan tests/sdk-data.sh` on one shell line. The optional probe also runs under TSan. It
-keeps all original and derived bytes outside the contribution. The measured results and
-limitations are in [ANLZ evidence](15-analysis-evidence.md); native research is recorded in
-[native evidence](16-native-evidence.md).
-
-`tests/sdk-stored.sh` separately covers optional PCP2 tails, saved status matching, raw
-memory color IDs, PSSI versions and bounded PWV4/PWV6 windows, with deliberate regression
-controls. With the original sample it independently compares eight memory IDs and three
-streamed windows per preview encoding against raw file bytes. It also runs without assets.
-See stored-data completion evidence in the core checkout for the exact scope and
-remaining real saved-memory/native tests; waveform calibration is outside the current scope.
-
 ## Timing precision and invalid clocks
 
-Use `compare_timestamps()` from `azmod-timestamps.h` for every timestamp comparison,
-for observation equality, ordering, ranges and execution deadlines. Retried command payloads instead require exact normalized field equality:
-
-```c
-#include "azmod-timestamps.h"
-
-static int same_window(double first, double second, uint64_t units_per_second,
-                       uint64_t sample_rate, uint64_t window_samples) {
-    int order = compare_timestamps(first, second, units_per_second, sample_rate, window_samples);
-    return order == AZ_TIME_EQUAL;
-}
-```
+Use `compare_timestamps()` from `azmod-timestamps.h` for equality, ordering,
+ranges and deadlines. Handle `AZ_TIME_INVALID` explicitly. Retried command
+payloads require exact normalized field equality.
 
 The function returns `AZ_TIME_BEFORE`, `AZ_TIME_EQUAL`, `AZ_TIME_AFTER`, or
 `AZ_TIME_INVALID` for invalid parameters, non-finite floating timestamps, or a negative

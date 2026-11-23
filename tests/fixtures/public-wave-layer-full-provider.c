@@ -20,13 +20,14 @@ static void *full_probe_arg;
             exit(86);                                                           \
         }                                                                       \
     } while (0)
-static int full_wait(pthread_cond_t *condition, pthread_mutex_t *mutex, const struct timespec *deadline)
+int __real_pthread_cond_timedwait(pthread_cond_t *, pthread_mutex_t *, const struct timespec *);
+int __wrap_pthread_cond_timedwait(pthread_cond_t *condition, pthread_mutex_t *mutex, const struct timespec *deadline)
 {
     if (__atomic_load_n(&full_stop, __ATOMIC_ACQUIRE)) {
         FULL_CHECK(!pthread_mutex_unlock(mutex));
         pthread_exit(NULL);
     }
-    return pthread_cond_timedwait(condition, mutex, deadline);
+    return __real_pthread_cond_timedwait(condition, mutex, deadline);
 }
 static void *full_native_entry(void *unused)
 {
@@ -188,8 +189,7 @@ int main(int argc, char **argv)
     snprintf(path, sizeof path, "%s/sdb1/full.2EX", g_media);
     FILE *f = fopen(path, "wb");
     FULL_CHECK(f && fwrite(file, 1, sizeof file, f) == sizeof file && !fclose(f));
-    g_st_enabled = 1;
-    g_st_started = 0;
+    track_service_configure(1);
     FULL_CHECK(sdk_sq_resolve());
     full_open = g_sdk_sq.open_v2;
     full_prepare = g_sdk_sq.prepare;
@@ -201,13 +201,13 @@ int main(int argc, char **argv)
     az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .log = full_log, .library_service = full_service, .thread_start = full_start };
     FULL_CHECK(az_mod_v1_entry()->init(&core) == 0 && full_probe_fn);
     full_probe_fn(full_probe_arg);
-    FULL_CHECK(full_native_fn && g_st_started);
+    FULL_CHECK(full_native_fn);
     __atomic_store_n(&full_stop, 1, __ATOMIC_RELEASE);
-    st_worker_wake();
+    track_service_wake();
     FULL_CHECK(!pthread_join(full_thread, NULL));
     printf("FULL_PROVIDER_RESULT pass=%d opens=%d keys=%d queries=%d closes=%d accepted=%u released=%u outstanding=%d\n", full_pass, full_opens, full_keys, full_queries, full_closes, full_accepted, full_released, full_outstanding);
     FULL_CHECK(full_outstanding == 0 && full_accepted == full_released);
-    st_destroy(&g_st);
+    track_service_work();
     char command[PATH_MAX + 20];
     snprintf(command, sizeof command, "rm -rf '%s'", root);
     FULL_CHECK(!system(command));

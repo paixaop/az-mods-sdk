@@ -47,7 +47,7 @@ is published. It must also be unique across every repository a deck reads; see [
   "description": "Describe what your mod changes on the deck ...",
   "license": "GPL-3.0-only",
   "source": "https://github.com/your-name/beat-counter",
-  "api": 1,
+  "api": 2,
   "firmware": ["any"],
   "hooks": false,
   "min_core": "1.2.3",

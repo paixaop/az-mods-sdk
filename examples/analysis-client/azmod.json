@@ -1,0 +1,18 @@
+{
+  "azmod": 1,
+  "id": "analysis-client",
+  "name": "Core Analysis Client",
+  "version": "1.0.0",
+  "author": "AZ-MODS contributors",
+  "summary": "Request core phrase and vocal computation and copy its results.",
+  "description": "Public-service example with no decoder, worker or model. Requests analysis for a qualified native load, observes completion and copies result arrays.",
+  "license": "GPL-3.0-only",
+  "source": "https://github.com/paixaop/az-mods-sdk",
+  "api": 2,
+  "firmware": [
+    "any"
+  ],
+  "hooks": false,
+  "category": "tools",
+  "min_core": "1.2.3"
+}

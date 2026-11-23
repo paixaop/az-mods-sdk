@@ -43,8 +43,8 @@ class CheckHeader(unittest.TestCase):
         self.assertEqual(self.run_main(self.core(self.data)), 0)
 
     def test_one_changed_byte_is_caught(self):
-        i = self.data.index(b"AZ_MOD_ABI 1")
-        changed = self.data[:i + 11] + b"2" + self.data[i + 12:]
+        i = self.data.index(b"AZ_MOD_ABI 2")
+        changed = self.data[:i + 11] + b"9" + self.data[i + 12:]
         self.assertEqual(self.run_main(self.core(changed)), 1)
         self.assertIn("line", ch.compare(ch.SDK_HEADER, self.core(changed)))
 

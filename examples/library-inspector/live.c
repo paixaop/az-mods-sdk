@@ -199,8 +199,8 @@ static int init(const az_core_v1 *c)
     memset(lines, 0, sizeof lines);
     const az_deck_watch_v1 options = { sizeof options, AZ_DATA_VERSION, AZ_STATUS_ALL_DECKS, 4, AZ_STATUS_ALL_V1 };
     int rc = AZ_UNSUPPORTED;
-    if (AZ_LIB_HAS(library, on_deck_status) && AZ_LIB_HAS(library, deck_status_release))
-        rc = library->on_deck_status(ID, &options, changed, NULL, &watch);
+    if (AZ_OBSERVATION_HAS(observation, on_deck_status) && AZ_OBSERVATION_HAS(observation, deck_status_release))
+        rc = observation->on_deck_status(ID, &options, changed, NULL, &watch);
     for (unsigned i = 0; i < 4; ++i)
         for (unsigned j = 0; j < LIVE_PAGES; ++j)
             snprintf(lines[i][j][0], 116, rc == AZ_OK ? "Awaiting deck status" : "Deck status unavailable (%d)", rc);

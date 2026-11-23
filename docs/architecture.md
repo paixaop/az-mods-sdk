@@ -2,7 +2,7 @@
 
 AZ-MODS is split into three layers:
 
-- The public headers in `include/` define the ABI-v1 records, service tables and
+- The public headers in `include/` define the ABI 2 entry points, versioned records, service tables and
   helper contracts available to mods.
 - The core host owns authentication, bounded storage, native observation and
   command delivery. It publishes copied values rather than native pointers.

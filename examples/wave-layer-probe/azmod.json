@@ -9,7 +9,7 @@
   "category": "tools",
   "license": "GPL-3.0-only",
   "source": "https://github.com/Kyle-Hosman/az-mods-sdk",
-  "api": 1,
+  "api": 2,
   "firmware": [
     "any"
   ],

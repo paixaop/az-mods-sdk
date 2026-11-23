@@ -648,28 +648,31 @@ static int s_audio_tap(const char *id, int source, int frames, void (*fn)(const 
 static int s_deck_info(int deck, az_deck_info *out)
 {
     lifetime_gate();
-    if (!out || out->size < (int)offsetof(az_deck_info, title)) {
-        fail(K_API, "deck_info with size %d", out ? out->size : -1);
+    int size = -1;
+    if (out) memcpy(&size, out, sizeof size);
+    if (size < (int)(offsetof(az_deck_info, loaded) + sizeof out->loaded)) {
+        fail(K_API, "deck_info with size %d", size);
         return -1;
     }
     if (deck < 0 || deck > 3) {
         fail(K_API, "deck_info(%d): decks are 0..3", deck);
         return -1;
     }
-    int size = out->size;
+    az_deck_info value = { 0 };
+    value.size = size;
     pthread_mutex_lock(&dmu);
-    memset(out, 0, sizeof *out);
-    out->size = size;
-    out->loaded = D.loaded[deck];
-    out->playing = D.loaded[deck] ? D.playing[deck] : 0;
-    out->pad_mode = -1;
-    out->bpm = D.loaded[deck] ? D.bpm[deck] : 0.0;
-    out->len_s = -1;
+    value.loaded = D.loaded[deck];
+    value.playing = D.loaded[deck] ? D.playing[deck] : 0;
+    value.pad_mode = -1;
+    value.bpm = D.loaded[deck] ? D.bpm[deck] : 0.0;
+    value.len_s = -1;
     if (D.loaded[deck]) {
-        snprintf(out->title, sizeof out->title, "%s", D.title[deck]);
-        snprintf(out->artist, sizeof out->artist, "%s", D.artist[deck]);
+        snprintf(value.title, sizeof value.title, "%s", D.title[deck]);
+        snprintf(value.artist, sizeof value.artist, "%s", D.artist[deck]);
     }
     pthread_mutex_unlock(&dmu);
+    size_t bytes = (size_t)size < sizeof value ? (size_t)size : sizeof value;
+    memcpy(out, &value, bytes);
     return 0;
 }
 
@@ -1013,40 +1016,46 @@ static int ht_native_cues(int deck, az_native_cue_snapshot *out)
     return AZ_UNSUPPORTED;
 }
 
+static int ht_command_target(int deck, uint64_t epoch, az_command_target_v1 *out)
+{
+    if (deck < 0 || deck >= 4 || !epoch || !out || out->size < sizeof *out) return AZ_INVALID;
+    return AZ_UNSUPPORTED;
+}
+
 static const az_library_v1 HT_LIBRARY = {
     .abi = AZ_LIBRARY_ABI,
     .size = sizeof(az_library_v1),
     .lib_playlists = s_lib_playlists,
     .lib_tracks = s_lib_tracks,
-    .data_capabilities = ht_caps,
     .track_resolve = ht_resolve,
     .track_request = ht_request,
     .track_acquire = ht_acquire,
     .track_release = ht_release,
     .track_cancel = ht_cancel,
     .data_event = ht_event,
-    .deck_snapshot = ht_deck,
     .time_to_beat = ht_time_to_beat,
     .beat_to_time = ht_beat_to_time,
     .time_interval = ht_interval,
-    .command_submit = ht_command,
     .waveform_request = ht_wave_request,
     .waveform_acquire = ht_wave_acquire,
-    .command_poll = ht_command_poll,
-    .command_cancel = ht_command_cancel,
-    .command_release = ht_command_release,
-    .native_cues = ht_native_cues,
     .on_data_event = ht_on_data_event,
-    .on_command_complete = ht_on_command_complete,
-    .command_submit_async = ht_command_submit_async,
-    .command_acknowledge = ht_command_acknowledge,
-    .on_deck_status = hs_subscribe,
-    .deck_status_release = hs_release,
 };
+static az_observation_v1 HT_OBSERVATION = { .abi = AZ_OBSERVATION_ABI, .size = sizeof HT_OBSERVATION, .data_capabilities = ht_caps, .deck_snapshot = ht_deck, .native_cues = ht_native_cues, .command_target = ht_command_target, .on_deck_status = hs_subscribe, .deck_status_release = hs_release };
+static az_commands_v1 HT_COMMANDS = { .abi = AZ_COMMANDS_ABI, .size = sizeof HT_COMMANDS, .command_submit = ht_command, .command_poll = ht_command_poll, .command_cancel = ht_command_cancel, .command_release = ht_command_release, .on_command_complete = ht_on_command_complete, .command_submit_async = ht_command_submit_async, .command_acknowledge = ht_command_acknowledge };
 static const az_library_v1 *ht_library_service(uint32_t abi)
 {
     return abi == AZ_LIBRARY_ABI ? &HT_LIBRARY : NULL;
 }
+static const az_observation_v1 *ht_observation_service(uint32_t abi)
+{
+    return abi == AZ_OBSERVATION_ABI ? &HT_OBSERVATION : NULL;
+}
+
+static const az_commands_v1 *ht_command_service(uint32_t abi)
+{
+    return abi == AZ_COMMANDS_ABI ? &HT_COMMANDS : NULL;
+}
+
 
 static const az_core_v1 CORE = {
     .abi = AZ_MOD_ABI,
@@ -1096,22 +1105,8 @@ static const az_core_v1 CORE = {
     .banner = s_banner,
     .confirm = s_confirm,
     .post_ui = s_post_ui,
-    .data_capabilities = ht_caps,
-    .deck_snapshot = ht_deck,
-    .track_resolve = ht_resolve,
-    .track_request = ht_request,
-    .track_acquire = ht_acquire,
-    .track_release = ht_release,
-    .track_cancel = ht_cancel,
-    .data_event = ht_event,
-    .command_submit = ht_command,
-    .waveform_request = ht_wave_request,
-    .library_service = ht_library_service,
+    .library_service = ht_library_service, .observation_service = ht_observation_service, .command_service = ht_command_service,
     .beatport_login_service = hb_service,
-    .waveform_acquire = ht_wave_acquire,
-    .time_to_beat = ht_time_to_beat,
-    .beat_to_time = ht_beat_to_time,
-    .time_interval = ht_interval,
 };
 
 /* ---- loading and calling the mod ---------------------------------------------------------- */
