@@ -297,6 +297,15 @@ also waits for the native playable slot to hold the saved point/loop, with main
 cue, working loop and transport preserved. Refresh `native_cues` after each
 terminal callback before submitting another revision-fenced write.
 
+For a complete cue plan, check `AZ_COMMANDS_HAS(commands, cue_batch_submit_async)`.
+Submit an `az_cue_batch_request` with the native load and revision and up to
+eight Hot and ten Memory definitions. Use `AZ_CUE_BATCH_IF_EMPTY` for
+automatic placement or `AZ_CUE_BATCH_REPLACE` after confirming replacement.
+The core copies the request and holds cue-driven waveform updates until the
+native writes and Hot slot updates settle. Acknowledge the terminal result and
+retain callback context through `RELEASED` as for other async commands.
+An unsupported provider returns `AZ_UNSUPPORTED` before accepting the ID.
+
 `HOT_CLEAR` additionally accepts the native-cue-ID flag and exact revision for
 an explicitly approved replacement workflow. Its original unfenced calling form
 remains supported. Application-level overwrite approval and automatic-placement
