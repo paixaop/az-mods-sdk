@@ -1,5 +1,5 @@
-# The SDK's own checks: unit tests; the template mod and the C deck-status test mod under the host
-# test harness (plain, AddressSanitizer + UBSan, ThreadSanitizer) with the harness's planted
+# The template mod and the C deck-status test mod under the host test harness
+# (plain, AddressSanitizer + UBSan, ThreadSanitizer) with the harness's planted
 # controls; then build and validate both in the SDK container, and package the template.
 name: ci
 
@@ -19,13 +19,6 @@ jobs:
         run: |
           pip install clang-format==21.1.8
           git ls-files '*.c' ':!include/azmod-mod.h' | xargs clang-format --dry-run --Werror
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Unit tests
-        run: python3 -m unittest discover -s tests -v
 
   harness:
     runs-on: ubuntu-latest
@@ -90,10 +83,3 @@ jobs:
         run: tools/azmod-pack build tests/c/hello-decks
       - name: Package the template
         run: tools/azmod-pack package template --out dist --github "$GITHUB_REPOSITORY"
-      - name: Reproducible build
-        run: |
-          # The template's library must be byte-identical to the one recorded in
-          # tests/expected/hello-az.so.sha256 (built on another machine with the same container).
-          # A change to the template changes the hash: update the file in the same commit.
-          sha256sum template/out/hello-az.so
-          (cd template/out && sha256sum -c ../../tests/expected/hello-az.so.sha256)

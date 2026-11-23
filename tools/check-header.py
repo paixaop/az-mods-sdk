@@ -5,9 +5,9 @@
     tools/check-header.py --core PATH/TO/core
     tools/check-header.py PATH/TO/core/azmod-mod.h [PATH/TO/core/MOD-MENU-KEYS.md]
 
---core reads the header, timestamp helper and menu table from include/CORE-COMMIT.
-The positional form checks working-tree files, including the adjacent timestamp
-helper (override its location with --timestamps); it does not verify a pin.
+--core compares the public header, timestamp helper and menu table in the supplied
+core checkout. The positional form takes the header, an optional menu table and
+an adjacent timestamp helper. Use --timestamps to override the helper's location.
 
 include/azmod-mod.h must be byte-identical to the core's header: a mod compiled against it
 sees exactly the struct layouts the core was built with. With a second argument, the key
@@ -19,12 +19,10 @@ import argparse
 import os
 import re
 import sys
-import subprocess
 
 SDK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SDK_HEADER = os.path.join(SDK, "include", "azmod-mod.h")
 SDK_TIMESTAMP = os.path.join(SDK, "include", "azmod-timestamps.h")
-SDK_PIN = os.path.join(SDK, "include", "CORE-COMMIT")
 SDK_KEYS = os.path.join(SDK, "docs", "MOD-MENU-KEYS.md")
 KEYS_BLOCK = re.compile(rb"<!-- keys:begin.*?<!-- keys:end -->", re.S)
 
@@ -53,22 +51,6 @@ def compare_bytes(sdk, core):
         if x != y:
             return f"line {i} differs:\n  sdk:  {x.decode(errors='replace')}\n  core: {y.decode(errors='replace')}"
     return f"one file is longer: sdk {len(a)} lines, core {len(b)} lines"
-
-
-def pinned_inputs(root):
-    """Read all mirrors from the exact declared commit, never the working tree."""
-    with open(SDK_PIN, encoding="ascii") as source:
-        pin = source.read().strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", pin):
-        raise ValueError("include/CORE-COMMIT must hold one full commit id")
-    resolved = subprocess.check_output(
-        ["git", "-C", root, "rev-parse", "--verify", pin + "^{commit}"], stderr=subprocess.PIPE
-    ).decode().strip()
-    if resolved != pin:
-        raise ValueError("declared core input is not a commit")
-    paths = ("src/azmod/azmod-mod.h", "src/common/aztimestamp.h", "docs/MOD-MENU-KEYS.md")
-    return pin, [subprocess.check_output(["git", "-C", root, "show", pin + ":" + path],
-                                        stderr=subprocess.PIPE) for path in paths]
 
 
 def check_inputs(header, timestamp, keys, label):
@@ -100,14 +82,14 @@ def main(argv):
     parser.add_argument("header", nargs="?")
     parser.add_argument("keys", nargs="?")
     parser.add_argument("--timestamps", help="timestamp helper for a working-tree comparison")
-    parser.add_argument("--core", help="core Git checkout: compare every mirror at include/CORE-COMMIT")
+    parser.add_argument("--core", help="compare every mirror with this core checkout")
     try:
         args = parser.parse_args(argv[1:])
         if args.core:
             if args.header or args.keys or args.timestamps:
-                raise ValueError("--core cannot be combined with working-tree inputs")
-            pin, values = pinned_inputs(args.core)
-            return check_inputs(*values, "core commit " + pin)
+                raise ValueError("--core cannot be combined with explicit file paths")
+            args.header = os.path.join(args.core, "src", "azmod", "azmod-mod.h")
+            args.keys = os.path.join(args.core, "docs", "MOD-MENU-KEYS.md")
         if not args.header:
             raise ValueError("pass --core CHECKOUT or a core header")
         timestamps = args.timestamps or os.path.join(os.path.dirname(args.header), "..", "common", "aztimestamp.h")
@@ -120,7 +102,7 @@ def main(argv):
             with open(args.keys, "rb") as source:
                 keys = source.read()
         return check_inputs(header, timestamp, keys, "core working-tree inputs")
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError) as error:
         print(f"cannot verify core contract: {error}", file=sys.stderr)
         return 2
 

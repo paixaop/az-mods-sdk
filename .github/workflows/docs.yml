@@ -1,5 +1,5 @@
-# Builds the site on every push and pull request. A push to main on the public repository
-# also deploys it to GitHub Pages (Settings > Pages > Source: GitHub Actions).
+# Builds the site for main and pull requests. Repositories with GitHub Pages
+# enabled also deploy from main (Settings > Pages > Source: GitHub Actions).
 name: docs
 
 on:
@@ -33,7 +33,7 @@ jobs:
 
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !github.event.repository.private
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !github.event.repository.private && github.event.repository.has_pages
     runs-on: ubuntu-latest
     permissions:
       pages: write
