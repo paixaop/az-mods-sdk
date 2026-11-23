@@ -32,15 +32,10 @@ jobs:
             *[!0-9a-f]* | "") echo "include/CORE-COMMIT must hold one full commit id"; exit 1 ;;
           esac
           [ ${#sha} -eq 40 ] || { echo "include/CORE-COMMIT must hold a 40-character commit id"; exit 1; }
-          url="https://raw.githubusercontent.com/$CORE_REPOSITORY/$sha/src/azmod/azmod-mod.h"
-          curl -fsSL "$url" -o core.h
-          if cmp -s core.h include/azmod-mod.h; then
-            echo "include/azmod-mod.h matches the core at $sha"
-          else
-            echo "include/azmod-mod.h differs from the core at $sha:"
-            diff -u core.h include/azmod-mod.h || true
-            exit 1
-          fi
+          core="$RUNNER_TEMP/xdj-az-mods"
+          git init "$core"
+          git -C "$core" fetch --depth=1 "https://github.com/$CORE_REPOSITORY.git" "$sha"
+          python3 tools/check-header.py --core "$core"
 
   provider-integration:
     if: github.event_name == 'workflow_dispatch'
@@ -51,7 +46,7 @@ jobs:
       - name: Install integration dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libsqlite3-dev libx11-dev xauth xvfb
+          sudo apt-get install -y clang llvm libsqlite3-dev libx11-dev xauth xvfb
           sudo sysctl -w vm.mmap_rnd_bits=28
       - name: Check out the pinned core revision
         run: |
@@ -62,7 +57,7 @@ jobs:
           git -C "$core" checkout --detach FETCH_HEAD
           test "$(git -C "$core" rev-parse HEAD)" = "$sha"
           test -z "$(git -C "$core" status --porcelain)"
-          python3 tools/check-header.py "$core/src/azmod/azmod-mod.h"
+          python3 tools/check-header.py --core "$core"
           printf 'AZ_CORE_TEST_ROOT=%s\n' "$core" >> "$GITHUB_ENV"
       - name: Run the required provider and completion suites
         env:
@@ -70,6 +65,11 @@ jobs:
           HOST_CC: clang
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
+          # Some provider fixtures invoke cc directly.
+          compiler_dir="$RUNNER_TEMP/sdk-provider-compiler"
+          mkdir -p "$compiler_dir"
+          ln -s "$(command -v "$HOST_CC")" "$compiler_dir/cc"
+          export PATH="$compiler_dir:$PATH"
           xvfb-run -a python3 - <<'PY'
           import unittest
 
