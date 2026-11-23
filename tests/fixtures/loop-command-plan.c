@@ -145,8 +145,8 @@ static void begin_case(void)
     strcpy(directory, "/tmp/sdk-loop-batch.XXXXXX");
     assert(mkdtemp(directory));
     reset();
-    library.command_submit_async = batch_submit;
-    library.deck_snapshot = batch_snapshot;
+    library_commands.command_submit_async = batch_submit;
+    library_observation.deck_snapshot = batch_snapshot;
     actual_load = 42;
     applied_id = 0;
     call_count = 0;

@@ -4,6 +4,8 @@
 #include "azmod-mod.h"
 #define LIBRARY_INSPECTOR_ID "library-inspector"
 extern const az_library_v1 *library;
+extern const az_observation_v1 *observation;
+extern const az_commands_v1 *commands;
 typedef struct library_page {
     int (*init)(const az_core_v1 *);
     void (*tick)(void);

@@ -23,7 +23,7 @@ The same guide is on the web at
 
 | Path | |
 |---|---|
-| `include/azmod-mod.h` | the one header a mod includes (ABI version 1) |
+| `include/azmod-mod.h` | the one header a mod includes (ABI version 2) |
 | `docker/Dockerfile` | the build container: the C compiler and C library official AZ-MODS releases use |
 | `template/` | `hello-az`, a complete mod: a settings page with a checkbox, and a live BPM and title readout for each deck |
 | `template/.github/workflows/release.yml` | push a tag, get a release with the `.azmod` attached |

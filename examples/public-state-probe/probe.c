@@ -25,7 +25,7 @@
 #define PROBE_CUE_ONLY 0
 #endif
 static const az_core_v1 *probe_core;
-static const az_library_v1 *probe_library;
+static const az_observation_v1 *probe_library;
 static int probe_tempo_fields, probe_native_fields;
 #ifndef PROBE_TEMPO_LINE_BYTES
 #define PROBE_TEMPO_LINE_BYTES 512u
@@ -452,7 +452,7 @@ static void *probe_worker(void *unused)
 }
 static int probe_core_valid(const az_core_v1 *core)
 {
-    return core && core->abi == AZ_MOD_ABI && AZ_HAS(core, library_service) && AZ_HAS(core, thread_start) && AZ_HAS(core, log);
+    return core && core->abi == AZ_MOD_ABI && AZ_HAS(core, observation_service) && AZ_HAS(core, thread_start) && AZ_HAS(core, log);
 }
 static int probe_listen_cues(const az_core_v1 *core, uint32_t fields)
 {
@@ -468,8 +468,8 @@ static int probe_listen_cues(const az_core_v1 *core, uint32_t fields)
 static int init(const az_core_v1 *core)
 {
     if (!probe_core_valid(core)) return -1;
-    const az_library_v1 *shared = core->library_service(AZ_LIBRARY_ABI);
-    if (!AZ_LIB_HAS(shared, data_capabilities) || !AZ_LIB_HAS(shared, deck_snapshot)) return -1;
+    const az_observation_v1 *shared = core->observation_service(AZ_OBSERVATION_ABI);
+    if (!AZ_OBSERVATION_HAS(shared, data_capabilities) || !AZ_OBSERVATION_HAS(shared, deck_snapshot)) return -1;
     az_data_capabilities caps = { .size = sizeof caps };
     if (shared->data_capabilities(&caps) != AZ_OK) return -1;
     probe_core = core;

@@ -36,7 +36,7 @@ int main(void)
     probe_run_job(&probe_job);
     assert(submits == before && !probe.pending);
     assert(strstr(last_log, "event=refused"));
-    library.deck_snapshot = unavailable_snapshot;
+    library_observation.deck_snapshot = unavailable_snapshot;
     struct probe_input view = { .deck = 0 };
     probe_emit("snapshot", &view, AZ_OK, NULL);
     assert(strstr(last_log, "load_valid=0 native_load=0 load_unit=0 load_ns=0"));

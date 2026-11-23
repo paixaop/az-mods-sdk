@@ -114,10 +114,10 @@ static int capabilities(az_data_capabilities *out)
     out->commands = 0;
     return AZ_OK;
 }
-static az_library_v1 library = { .abi = AZ_LIBRARY_ABI, .size = sizeof library, .data_capabilities = capabilities, .deck_snapshot = snapshot };
-static const az_library_v1 *service(uint32_t abi)
+static az_observation_v1 library = { .abi = AZ_OBSERVATION_ABI, .size = sizeof library, .data_capabilities = capabilities, .deck_snapshot = snapshot };
+static const az_observation_v1 *service(uint32_t abi)
 {
-    assert(abi == AZ_LIBRARY_ABI);
+    assert(abi == AZ_OBSERVATION_ABI);
     return &library;
 }
 static void log_line(const char *id, const char *format, ...)
@@ -321,7 +321,7 @@ static void native_value_contracts(void)
 #endif
 int main(void)
 {
-    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .log = log_line, .thread_start = thread_start, .library_service = service };
+    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .log = log_line, .thread_start = thread_start, .observation_service = service };
     const az_mod_v1 *descriptor = az_mod_v1_entry();
     assert(descriptor->abi == AZ_MOD_ABI && descriptor->size == sizeof *descriptor && !strcmp(descriptor->id, "sdk-state-probe"));
     assert(!descriptor->tick && !descriptor->on_frame);
@@ -414,13 +414,13 @@ int main(void)
     core.abi++;
     assert(descriptor->init(&core) == -1 && !starts);
     core.abi--;
-    core.size = offsetof(az_core_v1, library_service);
+    core.size = offsetof(az_core_v1, observation_service);
     assert(descriptor->init(&core) == -1 && !starts);
     core.size = sizeof core;
     library.abi++;
     assert(descriptor->init(&core) == -1 && !starts);
     library.abi--;
-    library.size = offsetof(az_library_v1, deck_snapshot);
+    library.size = offsetof(az_observation_v1, deck_snapshot);
     assert(descriptor->init(&core) == -1 && !starts);
     library.size = sizeof library;
     library.deck_snapshot = NULL;

@@ -1,6 +1,6 @@
 # Listening to a loaded deck
 
-A deck-status subscription delivers the current state and subsequent changes on logical decks 0–3. A mod can listen to the physical deck with no tick, worker, open screen or outstanding command. A mod that requires these listeners declares `"min_core": "1.2.6"` in its manifest and checks both service pointers at runtime. A mod with an older-core fallback can keep its earlier minimum and select the fallback when either member is absent. A field's supported bit and availability describe what the running firmware and source can actually supply.
+A deck-status subscription delivers the current state and subsequent changes on logical decks 0–3. A mod can listen to the physical deck with no tick, worker, open screen or outstanding command. Check the observation service and its subscription members at runtime. A field's supported bit and availability describe what the running firmware and source can actually supply.
 
 ```c
 #include "azmod-data-helpers.h"
@@ -19,17 +19,17 @@ static void changed(const az_deck_status_event_v1 *event, void *user)
 
 static int init(const az_core_v1 *core)
 {
-    if (!AZ_HAS(core, library_service)) return -1;
-    const az_library_v1 *lib = core->library_service(AZ_LIBRARY_ABI);
-    if (!AZ_LIB_HAS(lib, on_deck_status) || !AZ_LIB_HAS(lib, deck_status_release)) return -1;
+    if (!AZ_HAS(core, observation_service)) return -1;
+    const az_observation_v1 *obs = core->observation_service(AZ_OBSERVATION_ABI);
+    if (!AZ_OBSERVATION_HAS(obs, on_deck_status) || !AZ_OBSERVATION_HAS(obs, deck_status_release)) return -1;
     const az_deck_watch_v1 watch = {
         sizeof watch, AZ_DATA_VERSION, AZ_STATUS_ALL_DECKS, 0, AZ_STATUS_TOPIC(AZ_STATUS_LOOP)
     };
-    return lib->on_deck_status(ID, &watch, changed, engaged, &subscription) == AZ_OK ? 0 : -1;
+    return obs->on_deck_status(ID, &watch, changed, engaged, &subscription) == AZ_OK ? 0 : -1;
 }
 ```
 
-Pass the mod ID, a size/version-tagged watch, a function in the mod, its user pointer, and an output handle. An error leaves the handle untouched. Register in init or a callback on the core UI thread. To stop, call `lib->deck_status_release(ID, subscription)` on that thread. You may release from inside the callback. Values, text and arrays belong to the core through the callback's return. Copy anything you want to retain.
+Pass the mod ID, a size/version-tagged watch, a function in the mod, its user pointer, and an output handle. An error leaves the handle untouched. Register in init or a callback on the core UI thread. To stop, call `obs->deck_status_release(ID, subscription)` on that thread. You may release from inside the callback. Values, text and arrays belong to the core through the callback's return. Copy anything you want to retain.
 
 ## Reading events
 
@@ -41,7 +41,11 @@ Use named fields and their `*_info` receipts. EMPTY confirms absence, READY perm
 
 When `LOAD.state` is READY with NATIVE provenance and equals `AZ_STATUS_LOAD_LOADED`, the event's nonzero `load_epoch` is the matched `native_load_generation`. A READY `LOAD.track` with `AZ_STATUS_LOAD_SCOPE` and `scope_id == event->load_epoch` supplies the qualified library identity for that load. The native generation alone does not establish a USB or library association. INITIAL, CHANGE and RESYNC retain the epoch of the image they deliver.
 
-To plan a native command from a retained status view, keep that qualified track and epoch, then read a fresh native load target with `az_read_native_load_target`. Require its generation to equal the retained epoch before planning and submitting commands. A replacement can become current before its status callback arrives; that mismatch must defer the old plan. Put the same generation in the command's `expected_load_generation` with `AZ_COMMAND_NATIVE_LOAD`, so the core checks the target again when executing it. The legacy `deck_snapshot.track` field has separate support and is not required for this join.
+To plan from a retained status view, pass its deck and epoch to
+`obs->command_target`. The copied target qualifies the current native load,
+cue revision, source clock and operation capabilities. Put that generation in
+`expected_load_generation` with `AZ_COMMAND_NATIVE_LOAD` so the command service
+checks it again during execution.
 
 When `loop->mode_info` is READY, `AZ_STATUS_LOOP_MODE_TIME` means the working loop length was set in source samples. `AZ_STATUS_LOOP_MODE_BEAT` means it was set as a beat fraction. Read `loop->engaged` separately to find out whether that loop is playing. When `loop->reloop_available_info` is READY, `reloop_available` says whether both ends of the retained loop are ready for re-entry on this source. It can stay true after EXIT clears the working loop. SDK command completion reports whether a requested action actually ran.
 

@@ -73,10 +73,10 @@ static int subscribe(const char *id, void (*fn)(int, int, void *), void *user)
     callback_user = user;
     return mode == 11 ? -1 : 0;
 }
-static az_library_v1 library = { .abi = AZ_LIBRARY_ABI, .size = sizeof library, .data_capabilities = caps, .deck_snapshot = snapshot };
-static const az_library_v1 *service(uint32_t abi)
+static az_observation_v1 library = { .abi = AZ_OBSERVATION_ABI, .size = sizeof library, .data_capabilities = caps, .deck_snapshot = snapshot };
+static const az_observation_v1 *service(uint32_t abi)
 {
-    assert(abi == AZ_LIBRARY_ABI);
+    assert(abi == AZ_OBSERVATION_ABI);
     return &library;
 }
 static int start(const char *id, const char *name, void *(*fn)(void *), void *user)
@@ -109,7 +109,7 @@ static void log_line(const char *id, const char *format, ...)
 int main(int argc, char **argv)
 {
     mode = argc > 1 ? (unsigned)atoi(argv[1]) : 0;
-    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .log = log_line, .library_service = service, .thread_start = start, .on_deck_event = subscribe };
+    az_core_v1 core = { .abi = AZ_MOD_ABI, .size = sizeof core, .log = log_line, .observation_service = service, .thread_start = start, .on_deck_event = subscribe };
     if (mode == 10) core.on_deck_event = NULL;
     int rc = az_mod_v1_entry()->init(&core);
     if (mode >= 10 && mode <= 12) {

@@ -8,7 +8,7 @@
   "description": "Built and validated by CI and exercised by the SDK test harness. Reads deck state through public core services.",
   "license": "GPL-3.0-only",
   "source": "https://github.com/Kyle-Hosman/az-mods-sdk",
-  "api": 1,
+  "api": 2,
   "firmware": [
     "any"
   ],

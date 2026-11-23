@@ -11,7 +11,7 @@
 #include <string.h>
 
 #define ID "status-client"
-static const az_library_v1 *library;
+static const az_observation_v1 *library;
 static az_deck_subscription handle;
 static void changed(const az_deck_status_event_v1 *e, void *user)
 {
@@ -48,9 +48,9 @@ static void changed(const az_deck_status_event_v1 *e, void *user)
 }
 static int initialize(const az_core_v1 *core)
 {
-    assert(AZ_HAS(core, library_service));
-    library = core->library_service(AZ_LIBRARY_ABI);
-    assert(AZ_LIB_HAS(library, on_deck_status) && AZ_LIB_HAS(library, deck_status_release));
+    assert(AZ_HAS(core, observation_service));
+    library = core->observation_service(AZ_OBSERVATION_ABI);
+    assert(AZ_OBSERVATION_HAS(library, on_deck_status) && AZ_OBSERVATION_HAS(library, deck_status_release));
     const az_deck_watch_v1 watch = { sizeof watch, AZ_DATA_VERSION, 1, 1, AZ_STATUS_TOPIC(AZ_STATUS_LOOP) | AZ_STATUS_TOPIC(AZ_STATUS_PHRASE_TRANSITION) };
     az_deck_subscription untouched = 123;
     assert(library->on_deck_status(ID, &watch, (az_deck_status_fn)(uintptr_t)&handle, NULL, &untouched) == AZ_INVALID);

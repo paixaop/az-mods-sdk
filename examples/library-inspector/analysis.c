@@ -152,7 +152,7 @@ static void tick(void)
 }
 static int init(const az_core_v1 *c)
 {
-    if (!AZ_LIB_HAS(library, data_capabilities) || !AZ_LIB_HAS(library, deck_snapshot)) return -1;
+    if (!AZ_OBSERVATION_HAS(observation, data_capabilities) || !AZ_OBSERVATION_HAS(observation, deck_snapshot)) return -1;
     core = c;
     if (!AZ_LIB_HAS(library, track_resolve) || !AZ_LIB_HAS(library, track_request) || !AZ_LIB_HAS(library, track_acquire) ||
         !AZ_LIB_HAS(library, track_release) || !AZ_HAS(c, thread_start) || !AZ_LIB_HAS(library, lib_tracks)) return -1;

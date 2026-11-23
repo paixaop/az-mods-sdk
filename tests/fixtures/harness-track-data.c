@@ -4,6 +4,70 @@
 #undef main
 #include <assert.h>
 #include <float.h>
+static const az_observation_v1 *observations = &HT_OBSERVATION;
+static const az_commands_v1 *commands = &HT_COMMANDS;
+
+static void legacy_deck_info_prefixes(void)
+{
+    unsigned char previous[sizeof D];
+    memcpy(previous, &D, sizeof D);
+    D.playing[3] = 1;
+    D.bpm[3] = 126.5;
+    snprintf(D.title[3], sizeof D.title[3], "%s", "Prefix track");
+    snprintf(D.artist[3], sizeof D.artist[3], "%s", "Prefix artist");
+    const int capacities[] = {
+        offsetof(az_deck_info, title),
+        offsetof(az_deck_info, loaded) + sizeof(int),
+        sizeof(az_deck_info),
+        sizeof(az_deck_info) + 16,
+    };
+    for (int loaded = 0; loaded <= 1; ++loaded) {
+        D.loaded[3] = loaded;
+        for (unsigned i = 0; i < sizeof capacities / sizeof *capacities; ++i) {
+            int capacity = capacities[i];
+            unsigned char *buffer = malloc((size_t)capacity);
+            assert(buffer);
+            memset(buffer, 0x5a, (size_t)capacity);
+            memcpy(buffer, &capacity, sizeof capacity);
+            assert(CORE.deck_info(3, (az_deck_info *)buffer) == 0);
+            az_deck_info value = { 0 };
+            size_t bytes = (size_t)capacity < sizeof value ? (size_t)capacity : sizeof value;
+            memcpy(&value, buffer, bytes);
+            assert(value.size == capacity && value.loaded == loaded);
+            if (bytes >= offsetof(az_deck_info, title)) {
+                assert(value.playing == loaded && value.pad_mode == -1);
+                assert(!value.has_stems && !value.stems_on && !value.content_id);
+                assert(value.bpm == (loaded ? 126.5 : 0));
+                assert(value.len_s < 0); /* Unknown duration has no source clock. */
+            }
+            if (bytes >= sizeof value) {
+                assert(!strcmp(value.title, loaded ? "Prefix track" : ""));
+                assert(!strcmp(value.artist, loaded ? "Prefix artist" : ""));
+                assert(!value.key[0]);
+            }
+            for (size_t tail = bytes; tail < (size_t)capacity; ++tail) assert(buffer[tail] == 0x5a);
+            free(buffer);
+        }
+    }
+    const int invalid_sizes[] = { -1, 0, sizeof(int), offsetof(az_deck_info, loaded) + sizeof(int) - 1 };
+    int *short_record = malloc(sizeof *short_record);
+    assert(short_record);
+    for (unsigned i = 0; i < sizeof invalid_sizes / sizeof *invalid_sizes; ++i) {
+        *short_record = invalid_sizes[i];
+        assert(CORE.deck_info(3, (az_deck_info *)short_record) == -1);
+        assert(*short_record == invalid_sizes[i]);
+    }
+    free(short_record);
+    az_deck_info unchanged = { .size = sizeof unchanged, .loaded = 7 };
+    unsigned char before[sizeof unchanged];
+    memcpy(before, &unchanged, sizeof before);
+    assert(CORE.deck_info(-1, &unchanged) == -1);
+    assert(CORE.deck_info(4, &unchanged) == -1);
+    assert(!memcmp(&unchanged, before, sizeof unchanged));
+    assert(CORE.deck_info(0, NULL) == -1);
+    memcpy(&D, previous, sizeof D);
+}
+
 static void waveform_axis(const az_wave_snapshot *wave, uint32_t first, uint64_t source_rate)
 {
     /* Every synthetic preview here spans the fixture's two-second track;
@@ -95,34 +159,34 @@ static void invalid_envelopes(const az_library_v1 *library, const az_track_ref *
         memset(&result, 0x5a, sizeof result);
         result.size = sizeof result;
         az_command_result before = result;
-        assert(library->command_submit("fixture", &invalid, &result) == AZ_INVALID);
+        assert(commands->command_submit("fixture", &invalid, &result) == AZ_INVALID);
         assert(!memcmp(&result, &before, sizeof result));
     }
     az_command_result result = { .size = sizeof result };
-    assert(library->command_submit("fixture", &valid, &result) == AZ_UNSUPPORTED);
+    assert(commands->command_submit("fixture", &valid, &result) == AZ_UNSUPPORTED);
     assert(result.request_id == valid.request_id && result.outcome == AZ_COMMAND_REJECTED);
     valid.flags = AZ_COMMAND_NATIVE_LOAD;
-    assert(library->command_submit("fixture", &valid, &result) == AZ_UNSUPPORTED);
+    assert(commands->command_submit("fixture", &valid, &result) == AZ_UNSUPPORTED);
     valid.operation = AZ_CMD_RELOOP;
-    assert(library->command_submit("fixture", &valid, &result) == AZ_UNSUPPORTED);
+    assert(commands->command_submit("fixture", &valid, &result) == AZ_UNSUPPORTED);
     assert(result.request_id == valid.request_id && result.outcome == AZ_COMMAND_REJECTED);
     valid.expected_revision = 1;
-    assert(library->command_submit("fixture", &valid, &result) == AZ_INVALID);
+    assert(commands->command_submit("fixture", &valid, &result) == AZ_INVALID);
     valid.expected_revision = 0;
     valid.flags |= AZ_COMMAND_PERSIST;
-    assert(library->command_submit("fixture", &valid, &result) == AZ_INVALID);
+    assert(commands->command_submit("fixture", &valid, &result) == AZ_INVALID);
     valid.flags = 0;
     az_command_result before = result;
-    assert(AZ_LIB_HAS(library, command_release));
-    assert(library->command_poll("fixture", valid.request_id, &result) == AZ_STALE);
-    assert(library->command_cancel("fixture", valid.request_id, &result) == AZ_STALE);
-    assert(library->command_release("fixture", valid.request_id) == AZ_STALE);
+    assert(AZ_COMMANDS_HAS(commands, command_release));
+    assert(commands->command_poll("fixture", valid.request_id, &result) == AZ_STALE);
+    assert(commands->command_cancel("fixture", valid.request_id, &result) == AZ_STALE);
+    assert(commands->command_release("fixture", valid.request_id) == AZ_STALE);
     assert(!memcmp(&result, &before, sizeof result));
-    assert(library->command_poll("fixture", 0, &result) == AZ_INVALID);
-    assert(library->command_cancel("fixture", 0, &result) == AZ_INVALID);
-    assert(library->command_release("fixture", 0) == AZ_INVALID);
+    assert(commands->command_poll("fixture", 0, &result) == AZ_INVALID);
+    assert(commands->command_cancel("fixture", 0, &result) == AZ_INVALID);
+    assert(commands->command_release("fixture", 0) == AZ_INVALID);
 }
-static void native_command_envelopes(const az_library_v1 *library)
+static void native_command_envelopes(void)
 {
     /* Valid requests remain unsupported by this synthetic provider. They must
      * not be rejected as malformed by an obsolete EXIT-only envelope. */
@@ -171,7 +235,7 @@ static void native_command_envelopes(const az_library_v1 *library)
             if (operation == AZ_CMD_CUE_COMMENT) strcpy(request.comment, "SDK regression");
             if (operation == AZ_CMD_HOT_SET || operation == AZ_CMD_CUE_COLOR) request.rgb = 0x123456;
             az_command_result result = { .size = sizeof result };
-            assert(library->command_submit("fixture", &request, &result) == AZ_UNSUPPORTED);
+            assert(commands->command_submit("fixture", &request, &result) == AZ_UNSUPPORTED);
             assert(result.request_id == request.request_id && result.outcome == AZ_COMMAND_REJECTED && result.reason == AZ_UNSUPPORTED);
         }
     }
@@ -188,14 +252,14 @@ static void native_command_envelopes(const az_library_v1 *library)
         .entry_id = 1,
     };
     az_command_result result = { .size = sizeof result }, before = result;
-    assert(library->command_submit("fixture", &invalid, &result) == AZ_INVALID);
+    assert(commands->command_submit("fixture", &invalid, &result) == AZ_INVALID);
     invalid.flags |= AZ_COMMAND_NATIVE_LOAD;
     invalid.expected_revision = 0;
-    assert(library->command_submit("fixture", &invalid, &result) == AZ_INVALID);
+    assert(commands->command_submit("fixture", &invalid, &result) == AZ_INVALID);
     invalid.expected_revision = 1;
     invalid.flags = AZ_COMMAND_NATIVE_LOAD | AZ_COMMAND_NATIVE_CUE_IDS;
     invalid.operation = AZ_CMD_LOOP_EXIT;
-    assert(library->command_submit("fixture", &invalid, &result) == AZ_INVALID);
+    assert(commands->command_submit("fixture", &invalid, &result) == AZ_INVALID);
     assert(!memcmp(&result, &before, sizeof result));
 }
 static void short_records(const az_library_v1 *library)
@@ -208,7 +272,7 @@ static void short_records(const az_library_v1 *library)
     uint64_t safe_ticket = UINT64_MAX;
     az_command_request safe_request = { .size = sizeof safe_request, .version = 1, .operation = AZ_CMD_LOOP_EXIT, .request_id = 1, .expected_load_generation = 1, .deadline_ns = 1 };
     az_command_result safe_result = { .size = sizeof safe_result };
-    assert(library->data_capabilities((az_data_capabilities *)tiny) == AZ_INVALID);
+    assert(observations->data_capabilities((az_data_capabilities *)tiny) == AZ_INVALID);
     assert(*tiny == sizeof *tiny);
     *tiny = sizeof *tiny;
     assert(library->track_resolve("fixture", 0, 1, (az_track_ref *)tiny) == AZ_INVALID);
@@ -217,7 +281,7 @@ static void short_records(const az_library_v1 *library)
     assert(library->track_request("fixture", (const az_track_ref *)tiny, 1, &safe_ticket) == AZ_INVALID);
     assert(library->waveform_request("fixture", (const az_track_ref *)tiny, &safe_query, &safe_ticket) == AZ_INVALID);
     assert(library->waveform_request("fixture", &safe_ref, (const az_wave_query *)tiny, &safe_ticket) == AZ_INVALID);
-    assert(library->deck_snapshot(0, (az_deck_snapshot *)tiny) == AZ_INVALID);
+    assert(observations->deck_snapshot(0, (az_deck_snapshot *)tiny) == AZ_INVALID);
     assert(*tiny == sizeof *tiny);
     *tiny = sizeof *tiny;
     assert(library->data_event("fixture", 0, (az_data_change *)tiny) == AZ_INVALID);
@@ -226,10 +290,10 @@ static void short_records(const az_library_v1 *library)
     assert(library->time_interval(NULL, 0, 1, 1, (az_time_interval *)tiny) == AZ_INVALID);
     assert(*tiny == sizeof *tiny);
     *tiny = sizeof *tiny;
-    assert(library->command_submit("fixture", (const az_command_request *)tiny, &safe_result) == AZ_INVALID);
-    assert(library->command_submit("fixture", &safe_request, (az_command_result *)tiny) == AZ_INVALID);
-    assert(library->command_poll("fixture", 1, (az_command_result *)tiny) == AZ_INVALID);
-    assert(library->command_cancel("fixture", 1, (az_command_result *)tiny) == AZ_INVALID);
+    assert(commands->command_submit("fixture", (const az_command_request *)tiny, &safe_result) == AZ_INVALID);
+    assert(commands->command_submit("fixture", &safe_request, (az_command_result *)tiny) == AZ_INVALID);
+    assert(commands->command_poll("fixture", 1, (az_command_result *)tiny) == AZ_INVALID);
+    assert(commands->command_cancel("fixture", 1, (az_command_result *)tiny) == AZ_INVALID);
     assert(*tiny == sizeof *tiny);
     *tiny = sizeof *tiny;
     assert(*tiny == sizeof *tiny && safe_ticket == UINT64_MAX);
@@ -239,7 +303,7 @@ static void short_records(const az_library_v1 *library)
     assert(earlier);
     uint32_t declared = (uint32_t)earlier_size;
     memcpy(earlier, &declared, sizeof declared);
-    assert(library->deck_snapshot(0, earlier) == AZ_OK);
+    assert(observations->deck_snapshot(0, earlier) == AZ_OK);
     memcpy(&declared, earlier, sizeof declared);
     assert(declared == earlier_size);
     free(earlier);
@@ -274,16 +338,16 @@ static void callbacks(const az_library_v1 *library)
     az_library_v1 old = *library;
     const az_library_v1 *old_prefix = &old;
     old.size = offsetof(az_library_v1, on_data_event);
-    assert(!AZ_LIB_HAS(old_prefix, on_data_event) && !AZ_LIB_HAS(old_prefix, on_command_complete));
-    assert(AZ_LIB_HAS(library, on_data_event) && AZ_LIB_HAS(library, on_command_complete));
+    assert(!AZ_LIB_HAS(old_prefix, on_data_event));
+    assert(AZ_LIB_HAS(library, on_data_event) && AZ_COMMANDS_HAS(commands, on_command_complete));
     ctx = CTX_NONE;
     assert(library->on_data_event("fixture", got_data, NULL) == AZ_INVALID);
     ctx = CTX_INIT;
     assert(library->on_data_event("fixture", NULL, NULL) == AZ_INVALID);
     assert(library->on_data_event("fixture", got_data, &callback_count) == AZ_OK);
     assert(library->on_data_event("fixture", got_data, NULL) == AZ_LIMIT);
-    assert(library->on_command_complete("fixture", got_command, NULL) == AZ_OK);
-    assert(library->on_command_complete("fixture", got_command, NULL) == AZ_LIMIT);
+    assert(commands->on_command_complete("fixture", got_command, NULL) == AZ_OK);
+    assert(commands->on_command_complete("fixture", got_command, NULL) == AZ_LIMIT);
     static const az_mod_v1 callback_only_mod = { .tick = NULL };
     mod = &callback_only_mod;
     ctx = CTX_NONE;
@@ -326,7 +390,7 @@ static void initiate(void *user)
     ++initiation_calls;
     az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .request_id = 100 + at, .expected_load_generation = 1, .deadline_ns = 1 };
     az_command_result result = { .size = sizeof result };
-    handoff[at].status = HT_LIBRARY.command_submit_async("fixture", &request, never_complete, &handoff[at], &result);
+    handoff[at].status = HT_COMMANDS.command_submit_async("fixture", &request, never_complete, &handoff[at], &result);
     if (handoff[at].status == AZ_OK) {
         handoff[at].id = request.request_id;
         handoff[at].owned = 1;
@@ -341,15 +405,15 @@ static void asynchronous_boundary(void)
     az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .request_id = 99, .expected_load_generation = 1, .deadline_ns = 1 };
     az_command_result result = { .size = sizeof result }, before = result;
     ctx = CTX_NONE;
-    assert(HT_LIBRARY.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_INVALID);
+    assert(HT_COMMANDS.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_INVALID);
     assert(!memcmp(&before, &result, sizeof result));
     ctx = CTX_INIT;
-    assert(HT_LIBRARY.command_submit_async("fixture", &request, NULL, NULL, &result) == AZ_INVALID);
+    assert(HT_COMMANDS.command_submit_async("fixture", &request, NULL, NULL, &result) == AZ_INVALID);
     assert(!memcmp(&before, &result, sizeof result));
-    assert(HT_LIBRARY.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_UNSUPPORTED);
+    assert(HT_COMMANDS.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_UNSUPPORTED);
     assert(result.request_id == 99 && result.outcome == AZ_COMMAND_REJECTED);
-    assert(HT_LIBRARY.command_acknowledge("fixture", 99) == AZ_STALE);
-    assert(HT_LIBRARY.command_acknowledge("fixture", 0) == AZ_INVALID);
+    assert(HT_COMMANDS.command_acknowledge("fixture", 99) == AZ_STALE);
+    assert(HT_COMMANDS.command_acknowledge("fixture", 0) == AZ_INVALID);
     /* Exercise the actual bounded post_ui queue. A dropped pre-admission job
      * cannot establish ownership or require a command callback. */
     ctx = CTX_NONE;
@@ -384,7 +448,7 @@ static void status_callback(const az_deck_status_event_v1 *e, void *user)
     log->kind = e->kind;
     log->frame = e->view->position->head.samples;
     log->rate = e->view->position->head.rate_hz;
-    if (log->self_release) assert(HT_LIBRARY.deck_status_release("fixture", e->subscription) == AZ_OK);
+    if (log->self_release) assert(HT_OBSERVATION.deck_status_release("fixture", e->subscription) == AZ_OK);
 }
 static void status_motion_fixture(void)
 {
@@ -396,7 +460,7 @@ static void status_motion_fixture(void)
     az_deck_watch_v1 w = { sizeof w, AZ_DATA_VERSION, 1, 1, AZ_STATUS_TOPIC(AZ_STATUS_POSITION) | AZ_STATUS_TOPIC(AZ_STATUS_LOAD) };
     az_deck_subscription handle = 0;
     ctx = CTX_INIT;
-    assert(HT_LIBRARY.on_deck_status("fixture", &w, status_callback, &status_log, &handle) == AZ_OK && handle && !status_log.calls);
+    assert(HT_OBSERVATION.on_deck_status("fixture", &w, status_callback, &status_log, &handle) == AZ_OK && handle && !status_log.calls);
     ctx = CTX_NONE;
     hs_drain();
     assert(status_log.calls == 1 && status_log.kind == AZ_STATUS_INITIAL);
@@ -426,7 +490,7 @@ static void status_motion_fixture(void)
     hs_drain();
     assert(status_log.calls == 5 && !hs_count());
     ctx = CTX_INIT;
-    assert(HT_LIBRARY.deck_status_release("fixture", handle) == AZ_STALE);
+    assert(HT_OBSERVATION.deck_status_release("fixture", handle) == AZ_STALE);
     ctx = CTX_NONE;
     hs_motion(0, 0);
     hs_drain();
@@ -435,6 +499,7 @@ static void status_motion_fixture(void)
 }
 int main(void)
 {
+    legacy_deck_info_prefixes();
     timing_precision();
     mod_id = "fixture";
     thread_lifetime = lifetime;
@@ -458,7 +523,7 @@ int main(void)
     assert(library->time_to_beat(&wrong_version, 0, &unchanged) == AZ_INVALID);
     assert(library->beat_to_time(&wrong_version, 0, &unchanged) == AZ_INVALID);
     assert(library->time_interval(&wrong_version, 0, 1, 1, &checked) == AZ_INVALID);
-    assert(library->track_request == CORE.track_request && library->track_release == CORE.track_release);
+    assert(!CORE.library_service(1)); /* incompatible table layout is refused */
     az_library_v1 older_library = *library;
     const az_library_v1 *library_prefix = &older_library;
     older_library.size = offsetof(az_library_v1, waveform_request);
@@ -472,11 +537,11 @@ int main(void)
     az_data_capabilities caps = { .size = sizeof caps };
     assert(ht_caps(&caps) == AZ_OK && caps.stored_components == 31 && caps.commands == 0);
     az_deck_snapshot raw = { .size = sizeof raw };
-    assert(library->deck_snapshot(0, &raw) == AZ_OK);
+    assert(observations->deck_snapshot(0, &raw) == AZ_OK);
     assert(raw.valid == AZ_LIVE_LOADED);
     assert(raw.quantize == -1 && raw.play_mode_is_2 == -1 && raw.play_pause == -1 && raw.play_aux == -1 && raw.key_lock == -1);
     for (int deck = 0; deck < 4; ++deck) {
-        assert(library->deck_snapshot(deck, &raw) == AZ_OK);
+        assert(observations->deck_snapshot(deck, &raw) == AZ_OK);
         assert(!(raw.valid & (AZ_LIVE_MASTER_TEMPO | AZ_LIVE_SYNC)) && raw.master_tempo == -1 && raw.sync == -1 && raw.sync_raw_mode == -1);
     }
     assert(!raw.live_unit_generation && !raw.play_revision && !raw.quantize_revision && !raw.key_lock_revision);
@@ -490,7 +555,7 @@ int main(void)
     az_track_ref ref = { .size = sizeof ref };
     assert(ht_resolve("fixture", 0, 42, &ref) == AZ_OK);
     invalid_envelopes(library, &ref);
-    native_command_envelopes(library);
+    native_command_envelopes();
     ref.size += 32; /* Newer input prefixes must not overstate the immutable stored record. */
     uint64_t tickets[4];
     for (int i = 0; i < 4; i++) assert(ht_request("fixture", &ref, 31, &tickets[i]) == AZ_OK);

@@ -8,6 +8,8 @@
 #endif
 #include LOOP_PROBE_IMPL
 static az_library_v1 library;
+static az_observation_v1 library_observation;
+static az_commands_v1 library_commands;
 static az_core_v1 core;
 static char directory[1024], last_log[2048];
 static unsigned submits, polls, releases, cancels, threads, snapshots;
@@ -182,6 +184,18 @@ static const az_library_v1 *service(unsigned version)
     assert(version == 1);
     return &library;
 }
+static const az_observation_v1 *service_observation(unsigned version)
+{
+    assert(version == 1);
+    return &library_observation;
+}
+
+static const az_commands_v1 *service_commands(unsigned version)
+{
+    assert(version == 1);
+    return &library_commands;
+}
+
 static int start(const char *id, const char *name, void *(*worker)(void *), void *arg)
 {
     assert(!strcmp(id, ID) && !strcmp(name, "sdk-loop-command") && worker == probe_worker && !arg);
@@ -200,8 +214,10 @@ static void reset(void)
     terminal_outcome = AZ_COMMAND_APPLIED;
     release_busy = 0;
     request_supported = 1;
-    library = (az_library_v1){ .abi = 1, .size = sizeof library, .data_capabilities = capabilities, .deck_snapshot = snapshot, .command_submit_async = submit, .command_acknowledge = acknowledge, .command_poll = poll, .command_cancel = cancel, .command_release = release_result };
-    core = (az_core_v1){ .abi = AZ_MOD_ABI, .size = sizeof core, .log = log_line, .data_dir = data_directory, .library_service = service, .thread_start = start, .post_ui = post };
+    library = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof library,       };
+    library_observation = (az_observation_v1){ .abi = AZ_OBSERVATION_ABI, .size = sizeof library_observation, .data_capabilities = capabilities, .deck_snapshot = snapshot };
+    library_commands = (az_commands_v1){ .abi = AZ_COMMANDS_ABI, .size = sizeof library_commands, .command_submit_async = submit, .command_acknowledge = acknowledge, .command_poll = poll, .command_cancel = cancel, .command_release = release_result };
+    core = (az_core_v1){ .abi = AZ_MOD_ABI, .size = sizeof core, .log = log_line, .data_dir = data_directory, .library_service = service, .observation_service = service_observation, .command_service = service_commands, .thread_start = start, .post_ui = post };
     assert(az_mod_v1_entry()->init(&core) == 0);
     assert(strstr(last_log, "SDK_LOOP_READY v=1"));
 }
@@ -342,7 +358,7 @@ int main(void)
     assert(probe.io_failed);
     assert(!unlink(results_path));
     assert(!rmdir(directory));
-    core.size = offsetof(az_core_v1, library_service);
+    core.size = offsetof(az_core_v1, observation_service);
     assert(init(&core) == -1);
     assert(threads == 1 && snapshots > 10 && releases == 0 && polls == 0);
     puts("PASS public loop command probe: exact input, process binding, no replay, pending/terminal/cancel/release, stale loads and file guards");

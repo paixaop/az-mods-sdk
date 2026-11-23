@@ -147,13 +147,13 @@ int main(void)
     completion.kind = AZ_COMMAND_COMPLETION_TERMINAL;
     az_command_completion_fn callback = NULL;
     (void)callback;
-    az_library_v1 library;
+    az_commands_v1 library;
     memset(&library, 0, sizeof library);
-    library.abi = AZ_LIBRARY_ABI;
-    library.size = offsetof(az_library_v1, command_submit_async);
-    assert(!AZ_LIB_HAS(&library, command_submit_async));
+    library.abi = AZ_COMMANDS_ABI;
+    library.size = offsetof(az_commands_v1, command_submit_async);
+    assert(!AZ_COMMANDS_HAS(&library, command_submit_async));
     library.size = sizeof library;
-    assert(library.size >= offsetof(az_library_v1, command_acknowledge) + sizeof library.command_acknowledge);
-    assert(offsetof(az_library_v1, command_acknowledge) == offsetof(az_library_v1, command_submit_async) + sizeof library.command_submit_async);
+    assert(library.size >= offsetof(az_commands_v1, command_acknowledge) + sizeof library.command_acknowledge);
+    assert(offsetof(az_commands_v1, command_acknowledge) == offsetof(az_commands_v1, command_submit_async) + sizeof library.command_submit_async);
     return 0;
 }
