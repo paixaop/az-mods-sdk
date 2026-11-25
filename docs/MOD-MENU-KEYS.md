@@ -27,6 +27,14 @@ static int smooth_waveforms(void)
 }
 ```
 
+Cores with the append-only `official_setting_read` and `official_setting_write`
+services expose an overlay-thread interface for enumerating and changing official
+value rows. Check each function with `AZ_HAS`. A read includes the configured value,
+effective value and current availability. A write needs the expected configured
+value, runs the official row's change callback when the value changes, and queues
+the core's normal settings save. Earlier cores still offer `row_lookup` and
+`row_value` for reads.
+
 <!-- keys:begin (generated from features.def by keys_test.c --print, in the unit tests) -->
 | key | label | kind | parent | values |
 |---|---|---|---|---|

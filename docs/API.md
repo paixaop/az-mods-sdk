@@ -991,6 +991,16 @@ Calls `fn` for each track of a playlist, in the DJ's order.
 | `bpm` | the library's tempo (`bpmx100 / 100`) |
 | `len_s` | the track length in seconds, from the library |
 
+**Plan Set on a USB playlist**
+
+Check `AZ_HAS(core, on_plan_set)` and `AZ_HAS(core, plan_set_resolve)`. A mod may register the Plan Set action during init. The core shows **PLAN SET** in the native MENU on a highlighted USB playlist or inside its track list. The handler runs on the overlay thread after the native menu closes. Copy the target record and resolve it on a mod worker. Pass the returned USB port and target playlist ID to `playlist_order` and verify both source identity fields match. Treat the target mount as opaque. The handler can open a surface limited to `AZ_VIEW_BROWSE` and return to the playlist by releasing its focus and hiding it.
+
+**Ordered USB playlist edits via `az_library_v1`**
+
+Check for all three optional entries with `AZ_LIB_HAS`. Call `playlist_order` on a mod worker with the USB port, playlist ID and zero-based page offset. It returns one-based positions, exact entry IDs, a whole-order revision and the source generation and library ID. Compare those values across pages. The order is bounded to 20,000 entries and each page to `AZ_PLAYLIST_PAGE_LIMIT`.
+
+Call `playlist_move` on a mod worker with that order identity, the selected occurrence, and the old and final positions. `AZ_PENDING` returns a receipt without claiming the edit has run. Poll `playlist_move_status` until terminal. A later accepted move replaces the retained result. Playlist Editing must be enabled. The native editor runs its backup, move, readback and undo bookkeeping. The receipt reports the OneLibrary outcome and Device Library sync separately. Read the order again after an uncertain result.
+
 **`int lib_spool_kick(const char *id, int stick)`**
 
 Asks the core to apply the library spool now (below).
