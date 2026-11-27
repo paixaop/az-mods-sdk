@@ -45,6 +45,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,8 +67,8 @@
 /* ---- the simulated clock ---------------------------------------------------------------- */
 
 /* half a second past a whole second, so tick boundaries never sit exactly on one */
-static int64_t mono_ns = 5000 * NS + NS / 2;
-static int64_t wall_ns = T0_WALL * NS + NS / 2;
+static _Atomic int64_t mono_ns = 5000 * NS + NS / 2;
+static _Atomic int64_t wall_ns = T0_WALL * NS + NS / 2;
 
 #ifdef CLOCK_REALTIME_COARSE
 #define IS_WALL(id) ((id) == CLOCK_REALTIME || (id) == CLOCK_REALTIME_COARSE)
@@ -77,7 +78,7 @@ static int64_t wall_ns = T0_WALL * NS + NS / 2;
 
 int clock_gettime(clockid_t id, struct timespec *ts)
 {
-    int64_t v = IS_WALL(id) ? wall_ns : mono_ns;
+    int64_t v = atomic_load_explicit(IS_WALL(id) ? &wall_ns : &mono_ns, memory_order_relaxed);
     ts->tv_sec = (time_t)(v / NS);
     ts->tv_nsec = (long)(v % NS);
     return 0;
@@ -85,7 +86,7 @@ int clock_gettime(clockid_t id, struct timespec *ts)
 
 time_t time(time_t *t)
 {
-    time_t v = (time_t)(wall_ns / NS);
+    time_t v = (time_t)(atomic_load_explicit(&wall_ns, memory_order_relaxed) / NS);
     if (t) *t = v;
     return v;
 }
@@ -97,16 +98,19 @@ int gettimeofday(struct timeval *__restrict tv, void *__restrict tz)
 #endif
 {
     (void)tz;
-    tv->tv_sec = (time_t)(wall_ns / NS);
-    tv->tv_usec = (suseconds_t)(wall_ns % NS / 1000);
+    int64_t v = atomic_load_explicit(&wall_ns, memory_order_relaxed);
+    tv->tv_sec = (time_t)(v / NS);
+    tv->tv_usec = (suseconds_t)(v % NS / 1000);
     return 0;
 }
 
 static void hs_advance(void);
+static void banner_message_tick(void);
 static void advance(int64_t ns)
 {
-    mono_ns += ns;
-    wall_ns += ns;
+    atomic_fetch_add_explicit(&mono_ns, ns, memory_order_relaxed);
+    atomic_fetch_add_explicit(&wall_ns, ns, memory_order_relaxed);
+    banner_message_tick();
     hs_advance();
 }
 
@@ -137,17 +141,20 @@ static const char *const KNAME[NK] = {
 };
 static unsigned long kfails[NK];
 static char kfirst[NK][240];
+static pthread_mutex_t fail_mu = PTHREAD_MUTEX_INITIALIZER;
 static int kmeasured[NK];
 
 static void fail(int k, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void fail(int k, const char *fmt, ...)
 {
+    pthread_mutex_lock(&fail_mu);
     if (kfails[k]++ == 0) {
         va_list ap;
         va_start(ap, fmt);
         vsnprintf(kfirst[k], sizeof kfirst[k], fmt, ap);
         va_end(ap);
     }
+    pthread_mutex_unlock(&fail_mu);
 }
 
 /* ---- the counters in iocount.so (absent in the sanitizer run) ----------------------------- */
@@ -171,12 +178,13 @@ enum { CTX_NONE,
        CTX_DRAW,
        CTX_INPUT,
        CTX_ENTER,
-       CTX_UI };
+       CTX_UI,
+       CTX_FRAME };
 static const char *const CTXNAME[] = { "outside", "init", "tick", "on_draw", "on_input", "on_enter",
-                                       "a UI callback" };
+                                       "a UI callback", "on_frame" };
 
 static const char *mod_id;
-static int ctx = CTX_NONE;
+static __thread int ctx = CTX_NONE;
 static struct az_draw draw_ctx = { 0xA2D7A2D7u }, *cur_d;
 static az_rect cur_area;
 static int cur_row = 60;
@@ -187,6 +195,8 @@ static int screens_registered;
 /* what tick and the page asked for */
 static unsigned long redraw_tick, redraw_input, redraw_pending;
 static unsigned long log_lines;
+static char last_log[400];
+static pthread_mutex_t log_mu = PTHREAD_MUTEX_INITIALIZER;
 
 /* the last frame's text, for the functional scenarios */
 #define FRAME_MAX 160
@@ -203,7 +213,7 @@ static struct {
     double phase[4];       /* position in the beat, 0..1; -1 = no grid */
     char title[4][400];
     char artist[4][128];
-    int view;           /* AZ_VIEW_* */
+    _Atomic int view;   /* AZ_VIEW_*, read even when no UI callback is active */
 } D;
 static pthread_mutex_t dmu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -217,6 +227,7 @@ static struct {
     char val[128];
 } cfg_s[16];
 static int ncfg_i, ncfg_s;
+static pthread_mutex_t cfg_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static int key_ok(const char *key)
 {
@@ -237,21 +248,98 @@ static int lifetime = 1;                /* atomic: bumped by each reload of a mo
 static __thread int thread_lifetime;    /* 0 on threads the harness did not start for the mod */
 static pthread_mutex_t park_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t park_cv = PTHREAD_COND_INITIALIZER;
-static int nstarted, nparked;           /* under park_mu: mod threads started and parked */
+/* Workers that have neither returned nor parked, under park_mu. */
+static int nthreads, nretiring;
+
+static int mod_thread_stale(void)
+{
+    return thread_lifetime && thread_lifetime != __atomic_load_n(&lifetime, __ATOMIC_ACQUIRE);
+}
 
 static void lifetime_gate(void)
 {
-    if (!thread_lifetime || thread_lifetime == __atomic_load_n(&lifetime, __ATOMIC_ACQUIRE)) return;
+    if (!mod_thread_stale()) return;
+    /* Parking is permanent. A cancellation cleanup would otherwise decrement a second time. */
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
     pthread_mutex_lock(&park_mu);
-    nparked++;
+    nretiring--;
     pthread_cond_broadcast(&park_cv);
     for (;;) pthread_cond_wait(&park_cv, &park_mu);
 }
 
-static void check_id(const char *id, const char *what)
+static int check_id(const char *id, const char *what)
 {
     lifetime_gate();
-    if (!id || strcmp(id, mod_id) != 0) fail(K_API, "%s called with id \"%s\"", what, id ? id : "(null)");
+    int valid = id && mod_id && strcmp(id, mod_id) == 0;
+    if (!valid) fail(K_API, "%s called with id \"%s\"", what, id ? id : "(null)");
+    return valid;
+}
+
+/* Lookup and storage helpers below hold cfg_mu in their callers. */
+static int cfg_find_int(const char *key)
+{
+    for (int i = 0; i < ncfg_i; i++)
+        if (!strcmp(cfg_i[i].key, key)) return i;
+    return -1;
+}
+
+static int cfg_find_str(const char *key)
+{
+    for (int i = 0; i < ncfg_s; i++)
+        if (!strcmp(cfg_s[i].key, key)) return i;
+    return -1;
+}
+
+static void cfg_write_int(const char *key, int val)
+{
+    int slot = cfg_find_int(key);
+    if (slot < 0) {
+        if (ncfg_i == (int)(sizeof cfg_i / sizeof cfg_i[0])) return;
+        slot = ncfg_i++;
+        snprintf(cfg_i[slot].key, sizeof cfg_i[slot].key, "%s", key);
+    }
+    cfg_i[slot].val = val;
+}
+
+static size_t cfg_copy_text(char *dst, size_t capacity, const char *src)
+{
+    size_t length = strnlen(src, capacity - 1);
+    /* If the first excluded byte continues a character, drop the partial character. */
+    while (length && ((unsigned char)src[length] & 0xc0) == 0x80) length--;
+    memmove(dst, src, length);
+    dst[length] = '\0';
+    return length;
+}
+
+static void cfg_clean_text(char dst[128], const char *src)
+{
+    /* Keep one extra byte so cfg_copy_text can detect a partial final character. */
+    char clean[129];
+    size_t length = 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p && length < sizeof clean - 1; p++)
+        if (*p >= 0x20 && *p != 0x7f) clean[length++] = (char)*p;
+    clean[length] = '\0';
+    cfg_copy_text(dst, sizeof cfg_s[0].val, clean);
+}
+
+static void cfg_write_str(const char *key, const char *val)
+{
+    int slot = cfg_find_str(key);
+    if (slot < 0) {
+        if (ncfg_s == (int)(sizeof cfg_s / sizeof cfg_s[0])) return;
+        slot = ncfg_s++;
+        snprintf(cfg_s[slot].key, sizeof cfg_s[slot].key, "%s", key);
+    }
+    cfg_clean_text(cfg_s[slot].val, val);
+}
+
+SCENARIO_API static int cfg_int(const char *key, int def)
+{
+    pthread_mutex_lock(&cfg_mu);
+    int slot = cfg_find_int(key);
+    int val = slot >= 0 ? cfg_i[slot].val : def;
+    pthread_mutex_unlock(&cfg_mu);
+    return val;
 }
 
 static int s_cfg_get(const char *id, const char *key, int def)
@@ -261,9 +349,7 @@ static int s_cfg_get(const char *id, const char *key, int def)
         fail(K_API, "cfg_get with a bad key");
         return def;
     }
-    for (int i = 0; i < ncfg_i; i++)
-        if (!strcmp(cfg_i[i].key, key)) return cfg_i[i].val;
-    return def;
+    return cfg_int(key, def);
 }
 
 static void s_cfg_set(const char *id, const char *key, int val)
@@ -273,15 +359,21 @@ static void s_cfg_set(const char *id, const char *key, int val)
         fail(K_API, "cfg_set with a bad key");
         return;
     }
-    for (int i = 0; i < ncfg_i; i++)
-        if (!strcmp(cfg_i[i].key, key)) {
-            cfg_i[i].val = val;
-            return;
-        }
-    if (ncfg_i < 32) {
-        snprintf(cfg_i[ncfg_i].key, 40, "%s", key);
-        cfg_i[ncfg_i++].val = val;
-    }
+    pthread_mutex_lock(&cfg_mu);
+    cfg_write_int(key, val);
+    pthread_mutex_unlock(&cfg_mu);
+}
+
+static int cfg_read_str(const char *key, char *buf, size_t n, const char *def)
+{
+    pthread_mutex_lock(&cfg_mu);
+    int slot = key ? cfg_find_str(key) : -1;
+    const char *src = slot >= 0 ? cfg_s[slot].val : def;
+    size_t length = cfg_copy_text(buf, n, src ? src : "");
+    pthread_mutex_unlock(&cfg_mu);
+    /* Poison the unused bytes even when the buffer itself supplied the default. */
+    memset(buf + length + 1, 'U', n - length - 1);
+    return (int)length;
 }
 
 static int s_cfg_get_str(const char *id, const char *key, char *buf, int n, const char *def)
@@ -291,17 +383,11 @@ static int s_cfg_get_str(const char *id, const char *key, char *buf, int n, cons
         fail(K_API, "cfg_get_str with buffer size %d", n);
         return 0;
     }
-    memset(buf, 'U', (size_t)n);                /* the whole buffer is the core's to fill */
-    const char *v = def ? def : "";
-    if (!key_ok(key)) fail(K_API, "cfg_get_str with a bad key");
-    else
-        for (int i = 0; i < ncfg_s; i++)
-            if (!strcmp(cfg_s[i].key, key)) v = cfg_s[i].val;
-    int len = (int)strlen(v);
-    if (len > n - 1) len = n - 1;
-    memcpy(buf, v, (size_t)len);
-    buf[len] = '\0';
-    return len;
+    if (!key_ok(key)) {
+        fail(K_API, "cfg_get_str with a bad key");
+        key = NULL;
+    }
+    return cfg_read_str(key, buf, (size_t)n, def);
 }
 
 static void s_cfg_set_str(const char *id, const char *key, const char *val)
@@ -311,45 +397,31 @@ static void s_cfg_set_str(const char *id, const char *key, const char *val)
         fail(K_API, "cfg_set_str with a bad key or value");
         return;
     }
-    char clean[128];
-    int j = 0;
-    for (const char *p = val; *p && j < 127; p++)
-        if ((unsigned char)*p >= 0x20) clean[j++] = *p;
-    clean[j] = '\0';
-    for (int i = 0; i < ncfg_s; i++)
-        if (!strcmp(cfg_s[i].key, key)) {
-            memcpy(cfg_s[i].val, clean, 128);
-            return;
-        }
-    if (ncfg_s < 16) {
-        snprintf(cfg_s[ncfg_s].key, 40, "%s", key);
-        memcpy(cfg_s[ncfg_s++].val, clean, 128);
-    }
+    pthread_mutex_lock(&cfg_mu);
+    cfg_write_str(key, val);
+    pthread_mutex_unlock(&cfg_mu);
 }
 
 SCENARIO_API static const char *cfg_str(const char *key)
 {
-    for (int i = 0; i < ncfg_s; i++)
-        if (!strcmp(cfg_s[i].key, key)) return cfg_s[i].val;
-    return NULL;
+    static __thread char snapshots[sizeof cfg_s / sizeof cfg_s[0]][sizeof cfg_s[0].val];
+    pthread_mutex_lock(&cfg_mu);
+    int slot = cfg_find_str(key);
+    if (slot >= 0) memcpy(snapshots[slot], cfg_s[slot].val, sizeof snapshots[0]);
+    pthread_mutex_unlock(&cfg_mu);
+    return slot >= 0 ? snapshots[slot] : NULL;
 }
 
-SCENARIO_API static int cfg_int(const char *key, int def)
-{
-    for (int i = 0; i < ncfg_i; i++)
-        if (!strcmp(cfg_i[i].key, key)) return cfg_i[i].val;
-    return def;
-}
-
-static char last_log[400];
 static void s_log(const char *id, const char *fmt, ...)
 {
     check_id(id, "log");
     va_list ap;
     va_start(ap, fmt);
+    pthread_mutex_lock(&log_mu);
     vsnprintf(last_log, sizeof last_log, fmt, ap);
-    va_end(ap);
     log_lines++;
+    pthread_mutex_unlock(&log_mu);
+    va_end(ap);
 }
 
 static int s_claim_hook(const char *id, uintptr_t addr, void *hook, void **orig)
@@ -626,20 +698,27 @@ static struct {
 static int ntaps;
 static int keep_loaded;     /* a thread or tap holds the library: never unloaded, as on the deck */
 
+static int audio_tap_valid(int source, int frames)
+{
+    int valid_source = source >= 0 && source <= 3;
+    int valid_frames = frames >= 64 && frames <= 8192;
+    if (!valid_source) fail(K_API, "audio_tap source %d (decks are 0..3)", source);
+    if (!valid_frames) fail(K_API, "audio_tap frames %d (64..8192)", frames);
+    return valid_source && valid_frames;
+}
+
 static int s_audio_tap(const char *id, int source, int frames, void (*fn)(const float *, int, void *),
                        void *user)
 {
     check_id(id, "audio_tap");
-    if (source < 0 || source > 3) fail(K_API, "audio_tap source %d (decks are 0..3)", source);
-    if (frames < 64 || frames > 8192) fail(K_API, "audio_tap frames %d (64..8192)", frames);
-    if (ntaps >= 4) return -1;   /* the core's limit: 4 per mod (taps outlive a reload) */
-    if (!fn || ntaps == MAX_TAPS || source < 0 || source > 3 || frames < 64 || frames > 8192) return -1;
+    /* Taps outlive a reload and share the core's limit of four per mod. */
+    if (!audio_tap_valid(source, frames) || !fn || ntaps >= 4) return -1;
     taps[ntaps].source = source;
     taps[ntaps].frames = frames;
     taps[ntaps].fn = fn;
     taps[ntaps].user = user;
     ntaps++;
-    keep_loaded = 1;
+    __atomic_store_n(&keep_loaded, 1, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -695,7 +774,7 @@ static int s_deck_grid(int deck, double *beat, double *bar)
 static int s_view(void)
 {
     lifetime_gate();
-    return __atomic_load_n(&D.view, __ATOMIC_RELAXED);
+    return atomic_load_explicit(&D.view, memory_order_relaxed);
 }
 
 #define MAX_LISTEN 4
@@ -730,105 +809,201 @@ static void fire(int deck, int what)
     }
 }
 
-#define BANNERS 8
-static char banners[BANNERS][112];
-static int nbanner;
+/* The message-side queue and the last received banner are separate from post_ui. */
+#define BANNER_CAPACITY 64
+#define BANNERS_PER_TICK 16
+static char pending_banners[BANNER_CAPACITY][112];
+static char banner_text[sizeof pending_banners[0]];
+static unsigned banner_head, banner_tail;
+static pthread_mutex_t banner_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void s_banner(const char *id, const char *text, int ms)
 {
+    (void)ms; /* Scenario history records receipt; duration belongs to the firmware renderer. */
     check_id(id, "banner");
-    if (!text || ms <= 0) {
-        fail(K_API, "banner(%s, %d ms)", text ? "text" : "NULL", ms);
-        return;
+    if (!text || !*text) return;
+    int dropped = 0;
+    pthread_mutex_lock(&banner_mu);
+    if (!mod_thread_stale()) {
+        dropped = banner_tail - banner_head == BANNER_CAPACITY;
+        if (!dropped)
+            snprintf(pending_banners[banner_tail++ % BANNER_CAPACITY], sizeof banner_text, "%s", text);
     }
-    snprintf(banners[nbanner % BANNERS], sizeof banners[0], "%s", text);   /* the core keeps 111 bytes */
-    nbanner++;
+    pthread_mutex_unlock(&banner_mu);
+    if (dropped) s_log(id, "banner dropped: too many requests waiting");
 }
 
-SCENARIO_API static const char *last_banner(void) { return nbanner ? banners[(nbanner - 1) % BANNERS] : ""; }
+static void banner_message_tick(void)
+{
+    pthread_mutex_lock(&banner_mu);
+    for (int i = 0; i < BANNERS_PER_TICK && banner_head != banner_tail; ++i)
+        memcpy(banner_text, pending_banners[banner_head++ % BANNER_CAPACITY], sizeof banner_text);
+    pthread_mutex_unlock(&banner_mu);
+}
 
+static void reset_banners(void)
+{
+    pthread_mutex_lock(&banner_mu);
+    banner_head = banner_tail = 0;
+    banner_text[0] = '\0';
+    pthread_mutex_unlock(&banner_mu);
+}
+
+SCENARIO_API static const char *last_banner(void)
+{
+    static __thread char snapshot[sizeof banner_text];
+    pthread_mutex_lock(&banner_mu);
+    memcpy(snapshot, banner_text, sizeof snapshot);
+    pthread_mutex_unlock(&banner_mu);
+    return snapshot;
+}
+
+enum confirm_state { CONFIRM_IDLE,
+                     CONFIRM_PENDING,
+                     CONFIRM_SHOWN };
+struct confirm_prompt {
+    char title[48], text[240], yes[24];
+};
 static struct {
-    int open;
-    char title[128], text[256], yes[64];
+    enum confirm_state state;
+    struct confirm_prompt prompt;
+    int selected;
     void (*fn)(int, void *);
     void *user;
 } Q;
+static pthread_mutex_t confirm_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static int hs_mod_code(void *pointer);
+
+static void confirm_text(const char *title, const char *text, const char *yes)
+{
+    struct confirm_prompt *prompt = &Q.prompt;
+    snprintf(prompt->title, sizeof prompt->title, "%s", title && *title ? title : "Are you sure?");
+    snprintf(prompt->text, sizeof prompt->text, "%s", text ? text : "");
+    snprintf(prompt->yes, sizeof prompt->yes, "%s", yes && *yes ? yes : "OK");
+}
+
+static enum confirm_state confirm_snapshot(struct confirm_prompt *out)
+{
+    pthread_mutex_lock(&confirm_mu);
+    enum confirm_state state = Q.state;
+    if (out) *out = Q.prompt;
+    pthread_mutex_unlock(&confirm_mu);
+    return state;
+}
+
+static void reset_confirmation(void)
+{
+    pthread_mutex_lock(&confirm_mu);
+    memset(&Q, 0, sizeof Q);
+    pthread_mutex_unlock(&confirm_mu);
+}
+
+static void confirmation_tick(void)
+{
+    pthread_mutex_lock(&confirm_mu);
+    if (Q.state == CONFIRM_PENDING) Q.state = CONFIRM_SHOWN;
+    pthread_mutex_unlock(&confirm_mu);
+}
 
 static int s_confirm(const char *id, const char *title, const char *text, const char *yes,
                      void (*fn)(int, void *), void *user)
 {
-    check_id(id, "confirm");
-    if (ctx == CTX_NONE || ctx == CTX_DRAW) fail(K_API, "confirm from %s", CTXNAME[ctx]);
-    if (!title || !text || !yes || !fn) {
-        fail(K_API, "confirm with a NULL argument");
+    /* The native bus refuses confirmation before reaching locking services. */
+    if (ctx == CTX_FRAME || !check_id(id, "confirm")) return -1;
+    if (ctx == CTX_NONE && !thread_lifetime) {
+        fail(K_API, "confirm from %s", CTXNAME[ctx]);
         return -1;
     }
-    if (Q.open) return -1;
-    Q.open = 1;
-    snprintf(Q.title, sizeof Q.title, "%s", title);
-    snprintf(Q.text, sizeof Q.text, "%s", text);
-    snprintf(Q.yes, sizeof Q.yes, "%s", yes);
-    Q.fn = fn;
-    Q.user = user;
-    return 0;
+    if (!hs_mod_code((void *)fn)) {
+        fail(K_API, "confirm without a callback in the mod");
+        return -1;
+    }
+    pthread_mutex_lock(&confirm_mu);
+    int accepted = Q.state == CONFIRM_IDLE && !mod_thread_stale();
+    if (accepted) {
+        confirm_text(title, text, yes);
+        Q.fn = fn;
+        Q.user = user;
+        Q.state = CONFIRM_PENDING;
+    }
+    pthread_mutex_unlock(&confirm_mu);
+    return accepted ? 0 : -1;
 }
 
 static void answer(int yes)
 {
-    if (!Q.open) return;
-    Q.open = 0;
+    if (thread_lifetime || ctx == CTX_FRAME) return;
+    pthread_mutex_lock(&confirm_mu);
+    if (Q.state != CONFIRM_SHOWN) {
+        pthread_mutex_unlock(&confirm_mu);
+        return;
+    }
+    void (*fn)(int, void *) = Q.fn;
+    void *user = Q.user;
+    memset(&Q, 0, sizeof Q);
+    pthread_mutex_unlock(&confirm_mu);
+    int previous = ctx;
     ctx = CTX_UI;
     arm(1);
-    Q.fn(yes, Q.user);
+    fn(!!yes, user);
     arm(0);
-    ctx = CTX_NONE;
+    ctx = previous;
 }
 
 /* post_ui: queued from any thread, run on the UI thread before the next tick. */
-#define POSTQ 256
-static struct {
+#define POSTQ 64
+#define POST_PER_TICK 16
+struct post_job {
     void (*fn)(void *);
     void *user;
-} postq[POSTQ];
+};
+static struct post_job postq[POSTQ];
 static unsigned post_head, post_tail;
 static pthread_mutex_t post_mu = PTHREAD_MUTEX_INITIALIZER;
-static void *mod_base;                  /* the mod's load address, for "fn must be in your code" */
+static _Atomic(void *) mod_base;         /* the mod's load address, for "fn must be in your code" */
+
+static int post_callback_owned(void (*fn)(void *))
+{
+    Dl_info di;
+    return fn && dladdr((void *)fn, &di) && di.dli_fbase == mod_base;
+}
 
 static void s_post_ui(const char *id, void (*fn)(void *), void *user)
 {
     check_id(id, "post_ui");
-    Dl_info di;
-    if (!fn || !dladdr((void *)fn, &di) || di.dli_fbase != mod_base) {
-        fail(K_API, "post_ui with a function outside the mod");
-        return;
-    }
+    int dropped = 0;
     pthread_mutex_lock(&post_mu);
-    if (post_tail - post_head < POSTQ) {
-        postq[post_tail % POSTQ].fn = fn;
-        postq[post_tail % POSTQ].user = user;
-        post_tail++;
+    if (!post_callback_owned(fn)) {
+        fail(K_API, "post_ui with a function outside the mod");
+    } else if (!mod_thread_stale()) {
+        dropped = post_tail - post_head == POSTQ;
+        if (!dropped) postq[post_tail++ % POSTQ] = (struct post_job){ fn, user };
     }
     pthread_mutex_unlock(&post_mu);
+    if (dropped) s_log(id, "post_ui dropped: too many requests waiting");
+}
+
+static int pop_post(struct post_job *job)
+{
+    pthread_mutex_lock(&post_mu);
+    int ready = post_head != post_tail;
+    if (ready) *job = postq[post_head++ % POSTQ];
+    pthread_mutex_unlock(&post_mu);
+    return ready;
 }
 
 static void drain_post(void)
 {
-    for (;;) {
-        pthread_mutex_lock(&post_mu);
-        if (post_head == post_tail) {
-            pthread_mutex_unlock(&post_mu);
-            return;
-        }
-        void (*fn)(void *) = postq[post_head % POSTQ].fn;
-        void *user = postq[post_head % POSTQ].user;
-        post_head++;
-        pthread_mutex_unlock(&post_mu);
+    struct post_job job;
+    int previous = ctx;
+    for (int i = 0; i < POST_PER_TICK && pop_post(&job); i++) {
         ctx = CTX_UI;
         arm(1);
-        fn(user);
+        job.fn(job.user);
         arm(0);
-        ctx = CTX_NONE;
     }
+    ctx = previous;
 }
 
 /* ---- core 1.2.3: surfaces, lines and images ------------------------------------------------- */
@@ -941,47 +1116,72 @@ static int s_draw_image(az_draw *d, int x, int y, const unsigned char *rgba, int
     return 0;
 }
 
-static int nthreads;                    /* started in this lifetime */
-
 struct mod_thread {
     void *(*fn)(void *);
     void *arg;
     int lifetime;
 };
 
+static void mod_thread_done(void *unused)
+{
+    (void)unused;
+    pthread_mutex_lock(&park_mu);
+    if (mod_thread_stale()) nretiring--;
+    else nthreads--;
+    pthread_cond_broadcast(&park_cv);
+    pthread_mutex_unlock(&park_mu);
+}
+
 static void *mod_thread_main(void *p)
 {
     struct mod_thread t = *(struct mod_thread *)p;
     free(p);
     thread_lifetime = t.lifetime;
-    return t.fn(t.arg);
+    void *result;
+    pthread_cleanup_push(mod_thread_done, NULL);
+    result = t.fn(t.arg);
+    pthread_cleanup_pop(1);
+    return result;
+}
+
+static int mod_thread_create(struct mod_thread *mt)
+{
+    pthread_t t;
+    pthread_attr_t a;
+    int rc = pthread_attr_init(&a);
+    if (rc != 0) return rc;
+    rc = pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    if (rc == 0) rc = pthread_create(&t, &a, mod_thread_main, mt);
+    pthread_attr_destroy(&a);
+    return rc;
+}
+
+static int mod_thread_spawn(struct mod_thread *mt)
+{
+    pthread_mutex_lock(&park_mu);
+    int rc = -1;
+    if (!mod_thread_stale() && nthreads < 4) {
+        mt->lifetime = __atomic_load_n(&lifetime, __ATOMIC_RELAXED);
+        nthreads++;
+        rc = mod_thread_create(mt);
+        if (rc != 0) nthreads--;
+        else __atomic_store_n(&keep_loaded, 1, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&park_mu);
+    return rc;
 }
 
 static int s_thread_start(const char *id, const char *name, void *(*fn)(void *), void *arg)
 {
     check_id(id, "thread_start");
-    if (!name || !fn || nthreads >= 4) return -1;
+    if (!name || !fn) return -1;
     struct mod_thread *mt = malloc(sizeof *mt);
     if (!mt) return -1;
-    mt->fn = fn;
-    mt->arg = arg;
-    mt->lifetime = __atomic_load_n(&lifetime, __ATOMIC_ACQUIRE);
-    pthread_t t;
-    pthread_attr_t a;
-    pthread_attr_init(&a);
-    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-    int rc = pthread_create(&t, &a, mod_thread_main, mt);
-    pthread_attr_destroy(&a);
-    if (rc != 0) {
-        free(mt);
-        return -1;
-    }
-    nthreads++;
-    keep_loaded = 1;
-    pthread_mutex_lock(&park_mu);
-    nstarted++;
-    pthread_mutex_unlock(&park_mu);
-    return 0;
+    *mt = (struct mod_thread){ .fn = fn, .arg = arg };
+    int rc = mod_thread_spawn(mt);
+    if (rc != 0) free(mt);
+    lifetime_gate();
+    return rc == 0 ? 0 : -1;
 }
 
 /* End the previous lifetime's threads (see lifetime_gate). A thread that makes no core call
@@ -989,18 +1189,19 @@ static int s_thread_start(const char *id, const char *name, void *(*fn)(void *),
  * sanitizers. */
 static void end_lifetime(void)
 {
-    __atomic_add_fetch(&lifetime, 1, __ATOMIC_ACQ_REL);
     pthread_mutex_lock(&park_mu);
-    for (int i = 0; i < 200 && nparked < nstarted; i++) {
+    nretiring += nthreads;
+    nthreads = 0;
+    __atomic_add_fetch(&lifetime, 1, __ATOMIC_ACQ_REL);
+    for (int i = 0; i < 200 && nretiring; i++) {
         pthread_mutex_unlock(&park_mu);
         struct timespec ts = { 0, 10000000L };
         nanosleep(&ts, NULL);
         pthread_mutex_lock(&park_mu);
     }
-    if (nparked < nstarted)
-        printf("  note: %d mod thread(s) made no core call in 2 s and still run\n", nstarted - nparked);
+    if (nretiring)
+        printf("  note: %d mod thread(s) made no core call in 2 s and still run\n", nretiring);
     pthread_mutex_unlock(&park_mu);
-    nthreads = 0;
 }
 
 #include "track-data.h"
@@ -1012,13 +1213,13 @@ static void end_lifetime(void)
  * mod can load its settings and gate native writes on command capabilities. */
 static int ht_native_cues(int deck, az_native_cue_snapshot *out)
 {
-    if (deck < 0 || deck >= 4 || !out || out->size < AZ_NATIVE_CUE_SNAPSHOT_V1_SIZE) return AZ_INVALID;
+    if (deck < 0 || deck >= 4 || !out || ht_record_size(out) < AZ_NATIVE_CUE_SNAPSHOT_V1_SIZE) return AZ_INVALID;
     return AZ_UNSUPPORTED;
 }
 
 static int ht_command_target(int deck, uint64_t epoch, az_command_target_v1 *out)
 {
-    if (deck < 0 || deck >= 4 || !epoch || !out || out->size < sizeof *out) return AZ_INVALID;
+    if (deck < 0 || deck >= 4 || !epoch || !out || ht_record_size(out) < sizeof *out) return AZ_INVALID;
     return AZ_UNSUPPORTED;
 }
 
@@ -1055,7 +1256,6 @@ static const az_commands_v1 *ht_command_service(uint32_t abi)
 {
     return abi == AZ_COMMANDS_ABI ? &HT_COMMANDS : NULL;
 }
-
 
 static const az_core_v1 CORE = {
     .abi = AZ_MOD_ABI,
@@ -1105,7 +1305,9 @@ static const az_core_v1 CORE = {
     .banner = s_banner,
     .confirm = s_confirm,
     .post_ui = s_post_ui,
-    .library_service = ht_library_service, .observation_service = ht_observation_service, .command_service = ht_command_service,
+    .library_service = ht_library_service,
+    .observation_service = ht_observation_service,
+    .command_service = ht_command_service,
     .beatport_login_service = hb_service,
 };
 
@@ -1117,10 +1319,16 @@ static const az_mod_v1 *mod;
 
 static void reset_mod_services(void)
 {
+    end_lifetime();
+    reset_banners();
+    reset_confirmation();
+    pthread_mutex_lock(&post_mu);
+    post_head = post_tail = 0;
+    pthread_mutex_unlock(&post_mu);
     hs_reset();
     hb_configured = 0;
-    if (handle && !keep_loaded) dlclose(handle);   /* the core never unloads a mod with a thread or tap */
-    if (nthreads) end_lifetime();
+    if (handle && !__atomic_load_n(&keep_loaded, __ATOMIC_ACQUIRE))
+        dlclose(handle);   /* the core never unloads a mod with a thread or tap */
     pthread_mutex_lock(&ht_mu);
     memset(ht_slots, 0, sizeof ht_slots);
     ht_data_fn = NULL;
@@ -1155,7 +1363,9 @@ static int load_descriptor(void)
     }
     if (!mod_tags_valid(mod)) fail(K_INIT, "fw_tags is not { \"any\", NULL }");
     Dl_info di;
+    pthread_mutex_lock(&post_mu);
     mod_base = dladdr((void *)entry, &di) ? di.dli_fbase : NULL;
+    pthread_mutex_unlock(&post_mu);
     return 1;
 }
 static int no_mod_registrations(void)
@@ -1176,7 +1386,6 @@ static int initialize_mod(void)
     screens_registered = 0;
     nsurf = nlisten = 0;
     focus_surf = -1;
-    Q.open = 0;
     ctx = CTX_INIT;
     int rc = mod->init(&CORE);
     ctx = CTX_NONE;
@@ -1201,6 +1410,7 @@ static int load_mod(void)
 
 static void call_tick(void)
 {
+    confirmation_tick();
     hb_advance();
     drain_post();                       /* post_ui callbacks run on the UI thread, before tick */
     ht_callbacks();
@@ -1278,6 +1488,39 @@ static int point_in_rect(az_rect r, int x, int y)
 {
     return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
 }
+
+static int confirmation_tap(int x, int y)
+{
+    /* Button positions on the core's default 1280 by 800 overlay. */
+    static const az_rect buttons[] = { { 510, 493, 200, 52 }, { 730, 493, 200, 52 } };
+    for (int i = 0; i < 2; ++i)
+        if (point_in_rect(buttons[i], x, y)) return i;
+    return -1;
+}
+
+static int confirmation_choice(int kind, int dir, int x, int y)
+{
+    switch (kind) {
+    case AZ_EV_BACK: return 0;
+    case AZ_EV_CLICK: return Q.selected;
+    case AZ_EV_KNOB:
+        Q.selected = dir >= 0;
+        return -1;
+    case AZ_EV_TAP: return confirmation_tap(x, y);
+    default: return -1;
+    }
+}
+
+static int confirmation_input(int kind, int dir, int x, int y)
+{
+    pthread_mutex_lock(&confirm_mu);
+    int shown = Q.state == CONFIRM_SHOWN;
+    int choice = shown ? confirmation_choice(kind, dir, x, y) : -1;
+    pthread_mutex_unlock(&confirm_mu);
+    if (choice >= 0) answer(choice);
+    return shown;
+}
+
 static int surface_target(int kind, int x, int y)
 {
     for (int i = 0; i < nsurf; i++) {
@@ -1289,6 +1532,7 @@ static int surface_target(int kind, int x, int y)
 }
 static int call_input(int kind, int dir, int x, int y)
 {
+    if (confirmation_input(kind, dir, x, y)) return 1;
     if (!screen) {
         int target = surface_target(kind, x, y);
         return target < 0 ? 0 : surface_input(target, kind, dir, x, y);
@@ -1404,7 +1648,7 @@ static void soak_decks(const struct soak *s, int t)
 {
     int events[4] = { 0 };
     pthread_mutex_lock(&dmu);
-    if (t % 120 == 60) D.view = (int)(rnd() % 6);
+    if (t % 120 == 60) atomic_store_explicit(&D.view, (int)(rnd() % 6), memory_order_relaxed);
     for (int deck = 0; deck < 4; deck++) {
         events[deck] = soak_playback(deck, s->weird);
         soak_deck_clock(s, deck, t);
@@ -1419,12 +1663,13 @@ static void soak_decks(const struct soak *s, int t)
 static void soak_environment(const struct soak *s, int t)
 {
     advance(TICK_NS);
-    if (t == s->ticks / 2) wall_ns += (s->weird ? -600 : 3600) * NS;
+    if (t == s->ticks / 2) atomic_fetch_add_explicit(&wall_ns, (s->weird ? -600 : 3600) * NS, memory_order_relaxed);
     if (t % 300 == 150) D.count = s->weird && chance(2) ? (int)(rnd() % 9) - 1 : (D.count == 4 ? 2 : 4);
     if (t % 200 == 100) theme = theme == 1 ? 2 + (int)(rnd() % 4) : 1;
 }
 static void soak_long_press(int x, int y)
 {
+    if (confirmation_input(AZ_EV_LONG, 0, x, y)) return;
     for (int i = 0; i < nsurf; i++)
         if (surfs[i].shown && point_in_rect(surfs[i].r, x, y)) surface_input(i, AZ_EV_LONG, 0, x, y);
 }
@@ -1466,25 +1711,35 @@ static void soak_paint(const struct soak *s, int t, int *active, int *away)
         call_enter();
     }
 }
+static unsigned long log_snapshot(char (*last)[sizeof last_log])
+{
+    pthread_mutex_lock(&log_mu);
+    unsigned long lines = log_lines;
+    if (last) memcpy(*last, last_log, sizeof *last);
+    pthread_mutex_unlock(&log_mu);
+    return lines;
+}
+
 static void soak_report(const struct soak *s, double max_rate, unsigned long r0, unsigned long l0)
 {
     double secs = s->ticks * (double)TICK_NS / NS;
-    unsigned long redraws = redraw_tick - r0, logs = log_lines - l0;
+    char last[sizeof last_log];
+    unsigned long redraws = redraw_tick - r0, logs = log_snapshot(&last) - l0;
     double limit = max_rate * secs + secs / 60.0 + 3.0;
     if (redraws > limit)
         fail(K_REDRAW, "%s: %lu redraws from tick in %.0f s (limit %.0f)", s->name, redraws, secs, limit);
-    if (logs > 30) fail(K_LOG, "%s: %lu log lines in %d ticks (last: %s)", s->name, logs, s->ticks, last_log);
+    if (logs > 30) fail(K_LOG, "%s: %lu log lines in %d ticks (last: %s)", s->name, logs, s->ticks, last);
     printf("  soak %-10s %4d ticks  %4lu redraws from tick  %3lu log lines\n", s->name, s->ticks, redraws, logs);
 }
 static void soak(const struct soak *s, double max_rate)
 {
-    unsigned long r0 = redraw_tick, l0 = log_lines;
+    unsigned long r0 = redraw_tick, l0 = log_snapshot(NULL);
     int active = 1, away = 0;
     call_enter();
     for (int t = 0; t < s->ticks; t++) {
         soak_environment(s, t);
         soak_decks(s, t);
-        if (Q.open && chance(20)) answer(chance(2));
+        if (confirm_snapshot(NULL) == CONFIRM_SHOWN && chance(20)) answer(chance(2));
         call_tick();
         soak_paint(s, t, &active, &away);
         soak_input(s, &active);
@@ -1523,11 +1778,13 @@ static void reset_world(void)
     memset(&D, 0, sizeof D);
     for (int d = 0; d < 4; d++) D.phase[d] = -1.0;
     pthread_mutex_unlock(&dmu);
-    nbanner = 0;
+    reset_banners();
     D.count = 2;
+    pthread_mutex_lock(&cfg_mu);
     ncfg_i = ncfg_s = 0;
-    mono_ns = 5000 * NS + NS / 2;
-    wall_ns = T0_WALL * NS + NS / 2;
+    pthread_mutex_unlock(&cfg_mu);
+    atomic_store_explicit(&mono_ns, 5000 * NS + NS / 2, memory_order_relaxed);
+    atomic_store_explicit(&wall_ns, T0_WALL * NS + NS / 2, memory_order_relaxed);
     theme = 2;
 }
 
@@ -1566,6 +1823,7 @@ static int harness_report(void)
 {
     report_io_counts();
     int ok = 1;
+    pthread_mutex_lock(&fail_mu);
     for (int k = 0; k < NK; k++) {
         if (!kmeasured[k]) {
             printf("CHECK %s NOT-MEASURED\n", KNAME[k]);
@@ -1574,6 +1832,7 @@ static int harness_report(void)
         printf("CHECK %s %s %s\n", KNAME[k], kfails[k] ? "FAIL" : "PASS", kfails[k] ? kfirst[k] : "");
         if (kfails[k]) ok = 0;
     }
+    pthread_mutex_unlock(&fail_mu);
     return ok ? 0 : 1;
 }
 static void measure_checks(int functional)

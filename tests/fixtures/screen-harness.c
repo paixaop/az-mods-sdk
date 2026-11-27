@@ -85,6 +85,87 @@ static void surface_routes(void)
     assert(!call_input(AZ_EV_KNOB, 1, 0, 0));
 }
 
+struct confirm_result {
+    unsigned calls;
+    int yes;
+};
+
+static void confirmed(int yes, void *user)
+{
+    assert(ctx == CTX_UI && !thread_lifetime);
+    struct confirm_result *result = user;
+    ++result->calls;
+    result->yes = yes;
+}
+
+static int modal_page_input(const az_event *event, void *user)
+{
+    (void)event;
+    (void)user;
+    assert(ctx == CTX_INPUT);
+    ++inputs;
+    return 1;
+}
+
+static void open_confirmation(struct confirm_result *result)
+{
+    ctx = CTX_UI;
+    assert(CORE.confirm(mod_id, NULL, NULL, NULL, confirmed, result) == 0);
+    ctx = CTX_NONE;
+    call_tick();
+}
+
+static void confirmation_routes(void)
+{
+    static const az_mod_v1 no_ticks = { 0 };
+    static const az_screen_v1 page = { .size = sizeof page, .on_draw = paint, .on_input = modal_page_input };
+    Dl_info image;
+    assert(dladdr((void *)confirmed, &image));
+    mod_base = image.dli_fbase;
+    mod = &no_ticks;
+    screen = &page;
+
+    struct confirm_result result = { 0 };
+    ctx = CTX_UI;
+    assert(CORE.confirm(mod_id, NULL, NULL, NULL, confirmed, &result) == 0);
+    unsigned before = inputs;
+    assert(call_input(AZ_EV_BACK, 0, 0, 0) == 1 && inputs == before + 1 && !result.calls);
+    call_tick();
+    before = inputs;
+    assert(call_input(AZ_EV_KNOB, 1, 0, 0) == 1);
+    assert(call_input(AZ_EV_LONG, 0, 20, 30) == 1);
+    assert(call_input(99, 0, 0, 0) == 1);
+    assert(call_input(AZ_EV_TAP, 0, 930, 493) == 1 && !result.calls);
+    assert(call_input(AZ_EV_BACK, 0, 0, 0) == 1);
+    assert(result.calls == 1 && !result.yes && inputs == before);
+    assert(call_input(AZ_EV_BACK, 0, 0, 0) == 1 && inputs == before + 1);
+    before = inputs;
+
+    open_confirmation(&result);
+    assert(call_input(AZ_EV_CLICK, 0, 0, 0) == 1 && result.calls == 2 && !result.yes);
+    open_confirmation(&result);
+    assert(call_input(AZ_EV_KNOB, 1, 0, 0) == 1);
+    assert(call_input(AZ_EV_CLICK, 0, 0, 0) == 1 && result.calls == 3 && result.yes);
+    open_confirmation(&result);
+    assert(call_input(AZ_EV_KNOB, 1, 0, 0) == 1);
+    assert(call_input(AZ_EV_KNOB, -1, 0, 0) == 1);
+    assert(call_input(AZ_EV_CLICK, 0, 0, 0) == 1 && result.calls == 4 && !result.yes);
+    open_confirmation(&result);
+    assert(call_input(AZ_EV_TAP, 0, 730, 493) == 1 && result.calls == 5 && result.yes);
+    open_confirmation(&result);
+    assert(call_input(AZ_EV_TAP, 0, 510, 493) == 1 && result.calls == 6 && !result.yes);
+    assert(inputs == before);
+
+    screen = NULL;
+    ctx = CTX_UI;
+    assert(CORE.surface_focus(&surfs[0], 1));
+    open_confirmation(&result);
+    assert(call_input(AZ_EV_TAP, 0, 20, 30) == 1);
+    soak_long_press(20, 30);
+    assert(call_input(AZ_EV_BACK, 0, 0, 0) == 1 && result.calls == 7 && !result.yes && inputs == before);
+    assert(call_input(AZ_EV_KNOB, 1, 0, 0) == 1 && inputs == before + 1);
+}
+
 int main(void)
 {
     mod_id = "screen-fixture";
@@ -117,6 +198,7 @@ int main(void)
     invalid.size = offsetof(az_screen_v1, user);
     assert(CORE.register_screen(mod_id, &invalid) != 0);
     surface_routes();
+    confirmation_routes();
     puts("Screen harness: legacy descriptor and shared settings shortcut passed");
     return 0;
 }

@@ -18,6 +18,8 @@ static int test_clock(clockid_t kind, struct timespec *out)
 static unsigned initialized, ticked, drawn, fills, texts, redrawn, inputs;
 static int init_status;
 static const az_screen_v1 *registered;
+static az_rect frame_area = { 10, 20, 400, 300 };
+static int painted_left[4], painted_right[4];
 static int page_init(const az_core_v1 *c)
 {
     assert(c);
@@ -28,7 +30,8 @@ static void page_tick(void) { ++ticked; }
 static void page_draw(az_draw *d, az_rect area, void *user)
 {
     (void)d;
-    assert(!user && area.x == 10 && area.y == 60 && area.w == 400 && area.h == 260);
+    assert(!user && area.x == frame_area.x && area.y == frame_area.y + 40 &&
+           area.w == frame_area.w && area.h == frame_area.h - 40);
     ++drawn;
 }
 static int page_input(const az_event *event, void *user)
@@ -52,7 +55,10 @@ static int deck(int index, az_deck_snapshot *out)
     (void)out;
     return AZ_OK;
 }
-static az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service,  };
+static az_library_v1 service = {
+    .abi = AZ_LIBRARY_ABI,
+    .size = sizeof service,
+};
 static az_observation_v1 service_observation = { .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = caps, .deck_snapshot = deck };
 static az_commands_v1 service_commands = { .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands };
 static const az_library_v1 *get_service(uint32_t abi)
@@ -85,17 +91,35 @@ static void fill(az_draw *d, int x, int y, int w, int h, uint32_t rgb)
 {
     (void)d;
     (void)rgb;
-    assert(x >= 10 && y == 20 && w == 100 && h == 36);
+    assert(x >= frame_area.x && y == frame_area.y && w > 0 && h == 36);
+    painted_left[fills % 4] = x;
+    painted_right[fills % 4] = x + w;
     ++fills;
 }
 static void paint(az_draw *d, int x, int y, const char *text, int px, uint32_t rgb)
 {
     (void)d;
     (void)rgb;
-    assert(x >= 10 && y == 28 && text && px == 16);
+    assert(x >= frame_area.x && y == frame_area.y + 8 && text && px == 16);
     ++texts;
 }
 static void redraw(void) { ++redrawn; }
+
+static void uneven_tab_hit_regions(void)
+{
+    frame_area.w = 403;
+    registered->on_draw(NULL, frame_area, NULL);
+    for (unsigned i = 0; i < 4; ++i) {
+        az_event e = { .kind = AZ_EV_TAP, .x = painted_left[i], .y = frame_area.y + 1 };
+        assert(input(&e, NULL) == 1 && active == i);
+        e.x = painted_right[i] - 1;
+        assert(input(&e, NULL) == 1 && active == i);
+    }
+    registered->on_draw(NULL, (az_rect){ 0, 0, 20, 20 }, NULL);
+    az_event stale = { .kind = AZ_EV_TAP, .x = painted_left[1], .y = frame_area.y + 1 };
+    assert(input(&stale, NULL) == 17 && active == 3);
+}
+
 int main(void)
 {
     az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .observation_service = get_service_observation, .command_service = get_service_commands, .register_screen = screen_register, .log = log_line, .color = color, .text_width = width, .fill_rect = fill, .draw_text = paint, .request_redraw = redraw };
@@ -105,6 +129,7 @@ int main(void)
     registered->on_draw(NULL, (az_rect){ 0, 0, 20, 20 }, NULL);
     assert(drawn == 1 && fills == 4);
     assert(input(&(az_event){ .kind = AZ_EV_CLICK }, NULL) == 17 && inputs == 1);
+    registered->on_draw(NULL, frame_area, NULL);
     assert(input(&(az_event){ .kind = AZ_EV_TAP, .x = 150, .y = 30 }, NULL) == 1 && active == 1);
     assert(input(&(az_event){ .kind = AZ_EV_KNOB, .dir = 1 }, NULL) == 1 && active == 2);
     assert(input(&(az_event){ .kind = AZ_EV_KNOB, .dir = -1 }, NULL) == 1 && active == 1);
@@ -116,6 +141,7 @@ int main(void)
     clock_ns += UINT64_C(250000000);
     tick();
     assert(redrawn == 2);
+    uneven_tab_hit_regions();
     init_status = -1;
     assert(init(&c) == -1);
     c.library_service = NULL;

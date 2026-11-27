@@ -1,7 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include <assert.h>
 #include <stdarg.h>
+#ifdef AZ_ANALYSIS_CLIENT_LOCAL_SOURCE
+#include <example.c>
+#else
 #include "../../examples/analysis-client/example.c"
+#endif
 static az_deck_status_fn observed;
 static unsigned requests, copies, cancels, closes, terminal_logs;
 static int next_status = AZ_BUSY, next_release = AZ_BUSY, next_result = AZ_OK;

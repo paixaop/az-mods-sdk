@@ -11,7 +11,8 @@ static az_commands_v1 service_commands;
 const az_library_v1 *library = &service;
 const az_observation_v1 *observation = &service_observation;
 const az_commands_v1 *commands = &service_commands;
-static int requests, wave_requests, released, painted, bars;
+static int requests, wave_requests, acquisitions, release_calls, released, painted, bars;
+static int has_tracks = 1;
 static int track_status = AZ_OK, wave_status = AZ_PENDING, release_status = AZ_OK;
 static int caps(az_data_capabilities *out)
 {
@@ -36,6 +37,7 @@ static az_wave_snapshot wave = {
 static int tracks(const char *id, int stick, int playlist, int (*fn)(const az_track *, void *), void *user)
 {
     assert(!strcmp(id, ID) && stick == 0 && playlist == 0);
+    if (!has_tracks) return 0;
     az_track item = { .id = 42 };
     assert(fn(&item, user) == 1);
     return 1;
@@ -63,18 +65,21 @@ static int wave_request(const char *id, const az_track_ref *ref, const az_wave_q
 static int acquire(const char *id, uint64_t value, const az_track_snapshot **out)
 {
     assert(!strcmp(id, ID) && value == 1);
+    acquisitions++;
     *out = track_status == AZ_OK ? &track : NULL;
     return track_status;
 }
 static int wave_acquire(const char *id, uint64_t value, const az_wave_snapshot **out)
 {
     assert(!strcmp(id, ID) && value == 2);
+    acquisitions++;
     *out = wave_status == AZ_OK ? &wave : NULL;
     return wave_status;
 }
 static int release(const char *id, uint64_t value)
 {
     assert(!strcmp(id, ID) && (value == 1 || value == 2));
+    release_calls++;
     if (release_status == AZ_OK) ++released;
     return release_status;
 }
@@ -110,9 +115,55 @@ static void rect(az_draw *d, int x, int y, int w, int h, uint32_t rgb)
     assert(x >= 0 && y >= 0 && w >= 0 && h > 0 && rgb == 0xffffff);
     ++bars;
 }
+
+static void expired_tickets(void)
+{
+    track_status = wave_status = release_status = AZ_STALE;
+    atomic_store(&ready_ticket, 1);
+    atomic_store(&ready_wave, 2);
+    int before = release_calls;
+    tick();
+    assert(!ticket && !wave_ticket && release_calls == before + 2);
+    tick();
+    assert(release_calls == before + 2);
+}
+
+static void enter_empty_catalog(const az_core_v1 *core)
+{
+    int before_requests = requests;
+    int before_waves = wave_requests;
+    int before_acquisitions = acquisitions;
+    int before_release = release_calls;
+    int before_bars = bars;
+    has_tracks = 0;
+    assert(init(core) == AZ_OK);
+    tick();
+    draw(NULL, (az_rect){ 0, 0, 1280, 800 }, NULL);
+    assert(requests == before_requests && wave_requests == before_waves);
+    assert(acquisitions == before_acquisitions && release_calls == before_release);
+    assert(!ticket && !wave_ticket && !atomic_load(&ready_ticket) && !atomic_load(&ready_wave));
+    assert(bars == before_bars && !preview_count && !detail_ready);
+    for (unsigned i = 1; i < sizeof lines / sizeof lines[0]; ++i) assert(!lines[i][0]);
+}
+
+static void reload_empty_catalog(const az_core_v1 *core)
+{
+    track_status = wave_status = AZ_OK;
+    release_status = AZ_BUSY;
+    assert(init(core) == AZ_OK);
+    tick();
+    assert(ticket && wave_ticket && preview_count && detail_ready);
+    enter_empty_catalog(core);
+
+    has_tracks = 1;
+    assert(init(core) == AZ_OK);
+    assert(atomic_load(&ready_ticket) && atomic_load(&ready_wave));
+    enter_empty_catalog(core);
+}
+
 int main(void)
 {
-    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service, .lib_tracks = tracks,   .track_resolve = resolve, .track_request = request, .track_acquire = acquire, .track_release = release, .waveform_request = wave_request, .waveform_acquire = wave_acquire, .time_to_beat = timing };
+    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service, .lib_tracks = tracks, .track_resolve = resolve, .track_request = request, .track_acquire = acquire, .track_release = release, .waveform_request = wave_request, .waveform_acquire = wave_acquire, .time_to_beat = timing };
     service_observation = (az_observation_v1){ .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = caps, .deck_snapshot = deck };
     service_commands = (az_commands_v1){ .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands };
     const az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .thread_start = start, .color = color, .text_width = width, .draw_text = paint, .fill_rect = rect };
@@ -149,6 +200,8 @@ int main(void)
     wave_status = AZ_UNSUPPORTED;
     tick();
     assert(!wave_ticket && released == 4 && strstr(lines[4], "unavailable"));
+    expired_tickets();
+    reload_empty_catalog(&c);
     service.size = offsetof(az_library_v1, track_acquire);
     assert(init(&c) == -1);
     return 0;

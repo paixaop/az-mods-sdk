@@ -178,10 +178,7 @@ static int input(const az_event *event, void *user)
 
 static int init(const az_core_v1 *c)
 {
-    if (!AZ_HAS(c, library_service) || !AZ_HAS(c, observation_service) || !AZ_HAS(c, command_service)) return -1;
-    library = c->library_service(AZ_LIBRARY_ABI);
-    observation = c->observation_service(AZ_OBSERVATION_ABI);
-    commands = c->command_service(AZ_COMMANDS_ABI);
+    /* The inspector initializes the shared service tables before any page starts a worker. */
     core = c;
     snprintf(lines[0], sizeof lines[0], "Cue and loop command results");
     snprintf(lines[4], sizeof lines[4], "Click to EXIT the loop on deck 1, when available");
