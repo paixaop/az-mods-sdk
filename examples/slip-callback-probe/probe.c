@@ -15,7 +15,7 @@ static void changed(const az_deck_status_event_v1 *event, void *user)
 {
     (void)user;
     const az_deck_status_view_v1 *view = az_data_event_view(event, AZ_STATUS_TOPIC(AZ_STATUS_SETTINGS),
-                                                          offsetof(az_deck_status_view_v1, settings) + sizeof(((az_deck_status_view_v1 *)0)->settings));
+                                                            offsetof(az_deck_status_view_v1, settings) + sizeof(((az_deck_status_view_v1 *)0)->settings));
     if (!view || !az_data_covers(view->settings, sizeof *view->settings)) return;
     const az_status_settings_v1 *settings = view->settings;
     if (settings->header.version != AZ_DATA_VERSION) return;
@@ -30,7 +30,7 @@ static int init(const az_core_v1 *c)
     if (!AZ_OBSERVATION_HAS(observation, on_deck_status)) return -1;
     core = c;
     const az_deck_watch_v1 watch = { sizeof watch, AZ_DATA_VERSION, AZ_STATUS_ALL_DECKS, 0,
-                                    AZ_STATUS_TOPIC(AZ_STATUS_SETTINGS) };
+                                     AZ_STATUS_TOPIC(AZ_STATUS_SETTINGS) };
     return observation->on_deck_status(ID, &watch, changed, NULL, &subscription) == AZ_OK ? 0 : -1;
 }
 static const char *const tags[] = { "any", NULL };

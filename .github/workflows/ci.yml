@@ -55,7 +55,11 @@ jobs:
         # a compiler that drops -fsanitize must be reported as not instrumented
         if: matrix.pass != 'plain'
         run: |
-          printf '#!/bin/sh\nfor a; do shift; case $a in -fsanitize*|-fno-sanitize*) ;; *) set -- "$@" "$a" ;; esac; done\nexec clang "$@"\n' > "$RUNNER_TEMP/nosan-cc"
+          cat > "$RUNNER_TEMP/nosan-cc" <<'SH'
+          #!/bin/sh
+          for a; do shift; case $a in -fsanitize*|-fno-sanitize*) ;; *) set -- "$@" "$a" ;; esac; done
+          exec clang "$@"
+          SH
           chmod +x "$RUNNER_TEMP/nosan-cc"
           if CC="$RUNNER_TEMP/nosan-cc" sh tools/harness/sanitize.sh --passes ${{ matrix.pass }} \
                  hello-az:4:template/hello-az.c > nosan.log 2>&1; then

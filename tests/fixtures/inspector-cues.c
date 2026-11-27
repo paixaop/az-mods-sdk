@@ -79,7 +79,15 @@ static void paint(az_draw *d, int x, int y, const char *text, int px, uint32_t r
     assert(x >= 0 && y >= 0 && px == 16);
     ++painted;
 }
-static az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service, .track_acquire = acquire, .track_request = request, .track_release = release, .track_resolve = resolve, .lib_tracks = tracks, };
+static az_library_v1 service = {
+    .abi = AZ_LIBRARY_ABI,
+    .size = sizeof service,
+    .track_acquire = acquire,
+    .track_request = request,
+    .track_release = release,
+    .track_resolve = resolve,
+    .lib_tracks = tracks,
+};
 static az_observation_v1 service_observation = { .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = capabilities };
 static az_commands_v1 service_commands = { .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands };
 const az_library_v1 *library = &service;

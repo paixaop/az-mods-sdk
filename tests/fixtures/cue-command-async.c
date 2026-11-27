@@ -28,10 +28,14 @@ static const char *data_dir(const char *id)
 }
 static const az_library_v1 *library(uint32_t abi) { return abi == AZ_LIBRARY_ABI ? &service : NULL; }
 static const az_observation_v1 *library_observation(uint32_t abi)
-{ return abi == AZ_OBSERVATION_ABI ? &service_observation : NULL; }
+{
+    return abi == AZ_OBSERVATION_ABI ? &service_observation : NULL;
+}
 
 static const az_commands_v1 *library_commands(uint32_t abi)
-{ return abi == AZ_COMMANDS_ABI ? &service_commands : NULL; }
+{
+    return abi == AZ_COMMANDS_ABI ? &service_commands : NULL;
+}
 
 static int caps(az_data_capabilities *out)
 {
@@ -139,7 +143,7 @@ int main(void)
 {
     strcpy(directory, "/tmp/cue-async.XXXXXX");
     assert(mkdtemp(directory));
-    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service,         .data_event = forbidden_event };
+    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service, .data_event = forbidden_event };
     service_observation = (az_observation_v1){ .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = caps, .deck_snapshot = snapshot, .native_cues = native_cues };
     service_commands = (az_commands_v1){ .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands, .command_submit_async = submit, .command_acknowledge = ack, .command_cancel = forbidden_poll, .command_poll = forbidden_poll, .command_release = forbidden_release };
     host = (az_core_v1){ .abi = AZ_MOD_ABI, .size = sizeof host, .log = log_line, .data_dir = data_dir, .library_service = library, .observation_service = library_observation, .command_service = library_commands, .thread_start = start, .post_ui = post };

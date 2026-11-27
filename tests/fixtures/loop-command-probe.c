@@ -214,7 +214,10 @@ static void reset(void)
     terminal_outcome = AZ_COMMAND_APPLIED;
     release_busy = 0;
     request_supported = 1;
-    library = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof library,       };
+    library = (az_library_v1){
+        .abi = AZ_LIBRARY_ABI,
+        .size = sizeof library,
+    };
     library_observation = (az_observation_v1){ .abi = AZ_OBSERVATION_ABI, .size = sizeof library_observation, .data_capabilities = capabilities, .deck_snapshot = snapshot };
     library_commands = (az_commands_v1){ .abi = AZ_COMMANDS_ABI, .size = sizeof library_commands, .command_submit_async = submit, .command_acknowledge = acknowledge, .command_poll = poll, .command_cancel = cancel, .command_release = release_result };
     core = (az_core_v1){ .abi = AZ_MOD_ABI, .size = sizeof core, .log = log_line, .data_dir = data_directory, .library_service = service, .observation_service = service_observation, .command_service = service_commands, .thread_start = start, .post_ui = post };
