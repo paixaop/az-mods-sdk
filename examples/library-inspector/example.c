@@ -10,18 +10,27 @@ static const az_core_v1 *core;
 static const library_page *const pages[] = {
     &library_page_cues, &library_page_live, &library_page_analysis, &library_page_control
 };
+enum { TAB_COUNT = sizeof pages / sizeof pages[0] };
 static const char *const titles[] = { "USB cues", "Live decks", "USB analysis", "Control" };
 static unsigned active;
 static az_rect tabs;
 static uint64_t last_redraw;
+static int tab_edge(unsigned i)
+{
+    return tabs.x + (int)i * tabs.w / TAB_COUNT;
+}
+
 static void draw(az_draw *d, az_rect area, void *user)
 {
     (void)user;
-    if (area.w < 32 || area.h < 64) return;
+    if (area.w < 32 || area.h < 64) {
+        tabs = (az_rect){ 0 };
+        return;
+    }
     tabs = (az_rect){ area.x, area.y, area.w, 40 };
-    for (unsigned i = 0; i < 4; i++) {
-        int left = area.x + (int)i * area.w / 4;
-        int right = area.x + (int)(i + 1) * area.w / 4;
+    for (unsigned i = 0; i < TAB_COUNT; i++) {
+        int left = tab_edge(i);
+        int right = tab_edge(i + 1);
         uint32_t bg = core->color(i == active ? AZ_COL_HI : AZ_COL_BG);
         uint32_t fg = core->color(i == active ? AZ_COL_HI_TEXT : AZ_COL_TEXT);
         core->fill_rect(d, left, area.y, right - left, 36, bg);
@@ -37,11 +46,18 @@ static int tap_in_tabs(const az_event *ev)
     return ev->kind == AZ_EV_TAP && tabs.w > 0 && ev->x >= tabs.x && ev->x < tabs.x + tabs.w &&
            ev->y >= tabs.y && ev->y < tabs.y + tabs.h;
 }
+static unsigned tab_at(int x)
+{
+    for (unsigned i = 1; i < TAB_COUNT; i++)
+        if (x < tab_edge(i)) return i - 1;
+    return TAB_COUNT - 1;
+}
+
 static int input(const az_event *ev, void *user)
 {
     (void)user;
     if (tap_in_tabs(ev)) {
-        active = (unsigned)(ev->x - tabs.x) * 4u / (unsigned)tabs.w;
+        active = tab_at(ev->x);
         return 1;
     }
     if (pages[active]->input) return pages[active]->input(ev, NULL);

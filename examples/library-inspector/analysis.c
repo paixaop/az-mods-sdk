@@ -9,7 +9,6 @@ static const az_core_v1 *core;
 static _Atomic uint64_t ready_ticket;
 static uint64_t ticket, wave_ticket;
 static _Atomic uint64_t ready_wave;
-static int status = AZ_PENDING;
 static char lines[8][112];
 static uint8_t preview[64];
 static unsigned preview_count;
@@ -41,11 +40,9 @@ static void draw(az_draw *d, az_rect area, void *user)
     draw_preview(d, area, y, color);
 }
 
-static uint32_t first_track;
 static int pick(const az_track *track, void *user)
 {
-    (void)user;
-    first_track = track->id;
+    *(uint32_t *)user = track->id;
     return 1;
 }
 static void request_track(const az_track_ref *ref)
@@ -73,7 +70,8 @@ static void request_wave(const az_track_ref *ref)
 static void *load(void *arg)
 {
     (void)arg;
-    if (library->lib_tracks(ID, 0, 0, pick, NULL) < 0 || !first_track) return NULL;
+    uint32_t first_track = 0;
+    if (library->lib_tracks(ID, 0, 0, pick, &first_track) < 0 || !first_track) return NULL;
     az_track_ref ref = { .size = sizeof ref };
     if (library->track_resolve(ID, 0, first_track, &ref) != AZ_OK) return NULL;
     request_track(&ref);
@@ -116,6 +114,13 @@ static void format_track(const az_track_snapshot *s)
         }
     }
 }
+
+static void release_ticket(uint64_t *owned)
+{
+    int rc = library->track_release(ID, *owned);
+    if (rc == AZ_OK || rc == AZ_STALE) *owned = 0;
+}
+
 static void tick_track(void)
 {
     if (!core) return;
@@ -124,15 +129,9 @@ static void tick_track(void)
     const az_track_snapshot *s = NULL;
     int rc = library->track_acquire(ID, ticket, &s);
     if (rc == AZ_BUSY || rc == AZ_PENDING) return;
-    status = rc;
-    if (rc != AZ_OK) {
-        snprintf(lines[1], sizeof lines[1], "Track data status %d", rc);
-        if (library->track_release(ID, ticket) == AZ_OK) ticket = 0;
-        return;
-    }
-    format_track(s);
-    /* Copy into owned display text, then release the immutable snapshot. */
-    if (library->track_release(ID, ticket) == AZ_OK) ticket = 0;
+    if (rc == AZ_OK) format_track(s);
+    else snprintf(lines[1], sizeof lines[1], "Track data status %d", rc);
+    release_ticket(&ticket);
 }
 static void tick(void)
 {
@@ -148,14 +147,27 @@ static void tick(void)
         preview_columns(w->columns, w->column_count, 31);
         snprintf(lines[6], sizeof lines[6], "Detail chart: PWV3 height, first %.2f source seconds", w->column_count * w->seconds_per_column);
     } else snprintf(lines[4], sizeof lines[4], "Detailed waveform unavailable (status %d)", rc);
-    if (library->track_release(ID, wave_ticket) == AZ_OK) wave_ticket = 0;
+    release_ticket(&wave_ticket);
 }
+
+static void reset_view(void)
+{
+    /* Initialization starts a new core session; prior ticket IDs belong to its old store. */
+    atomic_store_explicit(&ready_ticket, 0, memory_order_relaxed);
+    atomic_store_explicit(&ready_wave, 0, memory_order_relaxed);
+    ticket = wave_ticket = 0;
+    memset(lines, 0, sizeof lines);
+    preview_count = 0;
+    detail_ready = 0;
+}
+
 static int init(const az_core_v1 *c)
 {
     if (!AZ_OBSERVATION_HAS(observation, data_capabilities) || !AZ_OBSERVATION_HAS(observation, deck_snapshot)) return -1;
     core = c;
     if (!AZ_LIB_HAS(library, track_resolve) || !AZ_LIB_HAS(library, track_request) || !AZ_LIB_HAS(library, track_acquire) ||
         !AZ_LIB_HAS(library, track_release) || !AZ_HAS(c, thread_start) || !AZ_LIB_HAS(library, lib_tracks)) return -1;
+    reset_view();
     snprintf(lines[0], sizeof lines[0], "Beat, phrase and waveform viewer");
     /* Owner-scoped services authenticate their caller's return address. Keep this call
      * inside the mod even when init has no more work (see the Makefile's sibling flag). */

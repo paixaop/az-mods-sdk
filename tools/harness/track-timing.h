@@ -13,24 +13,22 @@ static inline int ht_grid_request(const az_track_snapshot *s, double value, cons
     if (s->grid_info.availability != AZ_AVAIL_READY || s->beat_count < 2) return AZ_UNSUPPORTED;
     return AZ_OK;
 }
-static inline int ht_grid_bounds(const az_track_snapshot *s, double time, uint32_t rate, int *at_end) {
+static inline int ht_grid_bounds(const az_track_snapshot *s, double time, uint32_t rate) {
     const az_beat *b = s->beats;
     uint32_t hi = s->beat_count - 1;
     int extent = compare_timestamps(b[hi].time_s, b[0].time_s, 1, rate, 1);
     int start = compare_timestamps(time, b[0].time_s, 1, rate, 1);
     int end = compare_timestamps(time, b[hi].time_s, 1, rate, 1);
     if (extent == AZ_TIME_INVALID || extent != AZ_TIME_AFTER || start == AZ_TIME_INVALID || end == AZ_TIME_INVALID) return AZ_FAILED;
-    if (start == AZ_TIME_BEFORE || end == AZ_TIME_AFTER) return AZ_NOT_FOUND;
-    *at_end = end == AZ_TIME_EQUAL;
-    return AZ_OK;
+    return start == AZ_TIME_BEFORE || end == AZ_TIME_AFTER ? AZ_NOT_FOUND : AZ_OK;
 }
 static inline int ht_grid_middle(const az_beat *b, uint32_t lo, uint32_t mid, uint32_t hi, double time, uint32_t rate) {
     int lower = compare_timestamps(b[mid].time_s, b[lo].time_s, 1, rate, 1);
     int upper = compare_timestamps(b[mid].time_s, b[hi].time_s, 1, rate, 1);
-    int target = compare_timestamps(b[mid].time_s, time, 1, rate, 1);
-    if (lower == AZ_TIME_INVALID || upper == AZ_TIME_INVALID || target == AZ_TIME_INVALID ||
+    if (lower == AZ_TIME_INVALID || upper == AZ_TIME_INVALID ||
         lower != AZ_TIME_AFTER || upper != AZ_TIME_BEFORE) return AZ_TIME_INVALID;
-    return target;
+    /* A tolerance window is unsuitable for choosing between adjacent tempo segments. */
+    return b[mid].time_s < time ? AZ_TIME_BEFORE : AZ_TIME_AFTER;
 }
 static inline int ht_grid_interpolate(const az_beat *b, uint32_t lo, uint32_t hi, double time, uint32_t rate, double *out) {
     double span = b[hi].time_s - b[lo].time_s;
@@ -47,7 +45,7 @@ static inline int ht_grid_search(const az_track_snapshot *s, double time, double
         uint32_t mid = lo + (hi - lo) / 2;
         int target = ht_grid_middle(s->beats, lo, mid, hi, time, rate);
         if (target == AZ_TIME_INVALID) return AZ_FAILED;
-        if (target == AZ_TIME_BEFORE || target == AZ_TIME_EQUAL) lo = mid;
+        if (target == AZ_TIME_BEFORE) lo = mid;
         else hi = mid;
     }
     return ht_grid_interpolate(s->beats, lo, hi, time, rate, out);
@@ -56,10 +54,10 @@ static inline int ht_time_to_beat_rate(const az_track_snapshot *s, double time, 
     if (!source_rate) return AZ_INVALID;
     int rc = ht_grid_request(s, time, out);
     if (rc != AZ_OK) return rc;
-    int at_end;
-    rc = ht_grid_bounds(s, time, source_rate, &at_end);
+    rc = ht_grid_bounds(s, time, source_rate);
     if (rc != AZ_OK) return rc;
-    if (at_end) { *out = s->beat_count - 1; return AZ_OK; }
+    /* Clamp timestamps accepted within one source tick outside the grid. */
+    time = fmax(s->beats[0].time_s, fmin(time, s->beats[s->beat_count - 1].time_s));
     return ht_grid_search(s, time, out, source_rate);
 }
 static inline int ht_time_to_beat(const az_track_snapshot *s, double time, double *out) {

@@ -17,15 +17,23 @@ static unsigned selected, page;
 /* UI-owned copies. Pointers into the callback never reach draw(). */
 static char lines[4][LIVE_PAGES][6][116];
 
+static void draw_title(az_draw *d, az_rect area, uint32_t color)
+{
+    char title[96];
+    snprintf(title, sizeof title, "Deck %u / %s   (knob: deck, click: page)", selected + 1, page_names[page]);
+    if (core->text_width(title, 16) > area.w - 16)
+        snprintf(title, sizeof title, "Deck %u / %s", selected + 1, page_names[page]);
+    if (core->text_width(title, 16) <= area.w - 16)
+        core->draw_text(d, area.x + 8, area.y + 8, title, 16, color);
+}
+
 static void draw(az_draw *d, az_rect area, void *user)
 {
     (void)user;
     if (area.w < 32 || area.h < 32) return;
-    char title[96];
-    snprintf(title, sizeof title, "Deck %u / %s   (knob: deck, click: page)", selected + 1, page_names[page]);
     uint32_t color = core->color(AZ_COL_TEXT);
     int y = area.y + 8;
-    core->draw_text(d, area.x + 8, y, title, 16, color);
+    draw_title(d, area, color);
     for (int i = 0; i < 6 && (y += 28) + 24 < area.y + area.h; ++i)
         if (core->text_width(lines[selected][page][i], 16) < area.w - 16)
             core->draw_text(d, area.x + 8, y, lines[selected][page][i], 16, color);

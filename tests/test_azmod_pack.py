@@ -273,6 +273,15 @@ class ManifestChecks(unittest.TestCase):
             m["firmware"] = bad
             self.assertFalse(self.check(m).ok, bad)
 
+    def test_firmware_rejects_non_string_json_and_reports_duplicates(self):
+        m = manifest()
+        tag = "ep147-0123456789abcdef"
+        m["firmware"] = [{}, [], tag, tag]
+        errors = self.check(m).errors
+        self.assertTrue(any("firmware tag {}" in e for e in errors))
+        self.assertTrue(any("firmware tag []" in e for e in errors))
+        self.assertTrue(any("lists a tag twice" in e for e in errors))
+
     def test_hooks_must_be_bool(self):
         m = manifest()
         m["hooks"] = "no"
@@ -299,8 +308,9 @@ class ManifestChecks(unittest.TestCase):
         m = manifest()
         m["category"] = "visual"
         self.assertTrue(self.check(m).ok)
-        m["category"] = "Visual"
-        self.assertRefused(m, "\"category\"")
+        for value in ("Visual", [], {}):
+            m["category"] = value
+            self.assertRefused(m, "\"category\"")
 
     def test_manifest_file_rules(self):
         r = ap.Report()
@@ -951,6 +961,49 @@ class RepoIndex(unittest.TestCase):
         r = ap.Report()
         ap.check_repo_index(idx, r)
         self.assertTrue(any("listed twice" in e for e in r.errors))
+
+    def test_repo_commands_report_malformed_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            idx = os.path.join(td, "azmods-repo.json")
+            ep = os.path.join(td, "e.json")
+            with open(ep, "w") as f:
+                json.dump(sample_entry(), f)
+            data = {"azmods_repo": 1, "name": "n", "maintainer": "m",
+                    "homepage": "https://example.com"}
+            for mods, field in (([sample_entry(id=[], category={})], '"id"'),
+                                ([sample_entry(id="another-mod", category=[])], '"category"'),
+                                (None, '"mods"')):
+                with self.subTest(mods=mods):
+                    data["mods"] = mods
+                    raw = json.dumps(data)
+                    with open(idx, "w") as f:
+                        f.write(raw)
+                    for action, args in (("check", []), ("add", [ep])):
+                        rc, message = run(["repo", action, idx, *args])
+                        self.assertEqual(rc, 1, message)
+                        self.assertIn(field, message)
+                    with open(idx) as f:
+                        self.assertEqual(f.read(), raw)
+
+    def test_repo_add_reports_unreadable_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            idx = os.path.join(td, "azmods-repo.json")
+            ep = os.path.join(td, "e.json")
+            with open(ep, "wb") as f:
+                f.write(b"{\xff")
+            rc, message = run(["repo", "add", idx, ep])
+            self.assertEqual(rc, 1, message)
+            self.assertIn(ep, message)
+            self.assertFalse(os.path.exists(idx))
+            with open(ep, "w") as f:
+                json.dump(sample_entry(), f)
+            with open(idx, "w") as f:
+                f.write("{")
+            rc, message = run(["repo", "add", idx, ep])
+            self.assertEqual(rc, 1, message)
+            self.assertIn(idx, message)
+            with open(idx) as f:
+                self.assertEqual(f.read(), "{")
 
     def test_repo_index_url(self):
         u = "https://raw.githubusercontent.com/someone/az-mods/HEAD/azmods-repo.json"

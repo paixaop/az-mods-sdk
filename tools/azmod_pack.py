@@ -447,7 +447,8 @@ def check_firmware(report, fw, hooks, where):
     for t in fw:
         if not isinstance(t, str) or not FW_TAG_RE.match(t):
             report.error(f"{where}: firmware tag {t!r} is not of the form ep147-<16 hex>")
-    if len(set(fw)) != len(fw):
+    tags = [t for t in fw if isinstance(t, str)]
+    if len(set(tags)) != len(tags):
         report.error(f"{where}: \"firmware\" lists a tag twice")
 
 
@@ -488,7 +489,7 @@ def check_manifest(m, report):
     if mc is not None and (not isinstance(mc, str) or not SEMVER_RE.match(mc)):
         report.error(f"{w}: \"min_core\" must be MAJOR.MINOR.PATCH")
     cat = m.get("category")
-    if cat is not None and cat not in CATEGORIES:
+    if cat is not None and (not isinstance(cat, str) or cat not in CATEGORIES):
         report.error(f"{w}: \"category\" must be one of {sorted(CATEGORIES)}")
     if "beta" in m and not isinstance(m["beta"], bool):
         report.error(f"{w}: \"beta\" must be true or false")
@@ -643,7 +644,7 @@ def check_repo_entry(e, report, where):
     if not isinstance(u, str) or not DATE_RE.match(u):
         report.error(f"{where}: \"updated\" must be YYYY-MM-DD")
     cat = e.get("category")
-    if cat is not None and cat not in CATEGORIES:
+    if cat is not None and (not isinstance(cat, str) or cat not in CATEGORIES):
         report.error(f"{where}: \"category\" must be one of {sorted(CATEGORIES)}")
     if "beta" in e and not isinstance(e["beta"], bool):
         report.error(f"{where}: \"beta\" must be true or false")
@@ -676,10 +677,11 @@ def check_repo_index(idx, report):
     for n, e in enumerate(mods):
         where = f"{w}: mods[{n}]" + (f" ({e.get('id')})" if isinstance(e, dict) else "")
         check_repo_entry(e, report, where)
-        if isinstance(e, dict):
-            if e.get("id") in seen:
+        entry_id = e.get("id") if isinstance(e, dict) else None
+        if isinstance(entry_id, str):
+            if entry_id in seen:
                 report.error(f"{where}: id is listed twice")
-            seen.add(e.get("id"))
+            seen.add(entry_id)
 
 
 # =========================================================================================
@@ -1294,6 +1296,14 @@ def _load_json(path):
         return json.loads(f.read().decode("utf-8"))
 
 
+def _read_repo_json(path, report):
+    try:
+        return _load_json(path)
+    except (OSError, ValueError) as error:
+        report.error(f"{path}: {error}")
+        return None
+
+
 def _write_json(path, obj):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
@@ -1307,14 +1317,18 @@ def cmd_repo_add(args):
         print("pass the .entry.json that `azmod-pack package` wrote next to the package",
               file=sys.stderr)
         return 1
-    entry = _load_json(args.entry)
     r = Report()
-    check_repo_entry(entry, r, f"entry {args.entry}")
+    entry = _read_repo_json(args.entry, r)
+    if r.ok:
+        check_repo_entry(entry, r, f"entry {args.entry}")
     if not r.ok:
         r.print("entry")
         return 1
     if os.path.exists(args.index):
-        idx = _load_json(args.index)
+        idx = _read_repo_json(args.index, r)
+        if not r.ok:
+            r.print(args.index)
+            return 1
     else:
         if not (args.name and args.maintainer and args.homepage):
             print(f"{args.index} does not exist; pass --name, --maintainer and --homepage "
@@ -1322,17 +1336,20 @@ def cmd_repo_add(args):
             return 1
         idx = {"azmods_repo": 1, "name": args.name, "maintainer": args.maintainer,
                "homepage": args.homepage, "mods": []}
-    mods = [e for e in idx.get("mods", []) if not (isinstance(e, dict)
-                                                   and e.get("id") == entry["id"])]
-    action = "updated" if len(mods) != len(idx.get("mods", [])) else "added"
+    existing = idx.get("mods") if isinstance(idx, dict) else None
+    if not isinstance(existing, list):
+        check_repo_index(idx, r)
+        r.print(args.index)
+        return 1
+    mods = [e for e in existing if not (isinstance(e, dict) and e.get("id") == entry["id"])]
+    action = "updated" if len(mods) != len(existing) else "added"
     mods.append(entry)
-    mods.sort(key=lambda e: e.get("id", "") if isinstance(e, dict) else "")
     idx["mods"] = mods
-    r = Report()
     check_repo_index(idx, r)
     if not r.ok:
         r.print(args.index)
         return 1
+    mods.sort(key=lambda e: e["id"])
     _write_json(args.index, idx)
     print(f"{action} {entry['id']} {entry['version']} in {args.index}")
     return 0

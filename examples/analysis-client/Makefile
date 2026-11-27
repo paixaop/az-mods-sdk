@@ -6,8 +6,8 @@
 #                                    Ubuntu 18.04 toolchain); azmod-pack runs this
 #   make DEBUG=1 OUT=out-debug       a copy with debug info (-g) for addr2line: the same code
 #                                    at the same addresses as the plain build, plus line tables
-#   make test [SAN=plain|asan|tsan]  on your computer, with clang: build the mod for the
-#                                    host and run it under the SDK's test harness, plain,
+#   make test [SAN=plain|asan|tsan]  on your computer, with clang: build and run the SDK's
+#                                    C fixture for the analysis service lifecycle, plain,
 #                                    with AddressSanitizer + UBSan, or with ThreadSanitizer
 #                                    (default: all three). AZ_SDK is the SDK checkout.
 #
@@ -29,9 +29,8 @@
 
 MOD_ID          := analysis-client
 SRCS            := example.c
-AZ_SDK_INCLUDE  ?= ../../include
 AZ_SDK          ?= ../..
-MAX_REDRAWS     ?= 4          # the most repaints a second your tick asks for
+AZ_SDK_INCLUDE  ?= $(AZ_SDK)/include
 SAN             ?= plain asan tsan
 TEST_CC         ?= clang
 OUT             ?= out
@@ -61,8 +60,12 @@ endif
 
 comma := ,
 space := $(subst ,, )
+TEST_FIXTURE := $(AZ_SDK)/tests/fixtures/analysis-client.c
+TEST_TARGETS := test-plain test-asan test-tsan
+SAN_FLAGS_asan := -fsanitize=address,undefined -fno-sanitize-recover=all
+SAN_FLAGS_tsan := -fsanitize=thread
 
-.PHONY: all clean test
+.PHONY: all clean test $(TEST_TARGETS)
 all: $(OUT)/$(MOD_ID).so
 
 $(OUT)/$(MOD_ID).so: $(SRCS) $(AZ_SDK_INCLUDE)/azmod-mod.h | $(OUT)
@@ -71,11 +74,14 @@ $(OUT)/$(MOD_ID).so: $(SRCS) $(AZ_SDK_INCLUDE)/azmod-mod.h | $(OUT)
 $(OUT):
 	mkdir -p $(OUT)
 
-test:
-	@test -f $(AZ_SDK)/tools/harness/sanitize.sh || \
-	    { echo "make test: set AZ_SDK to your az-mods-sdk checkout" >&2; exit 2; }
-	CC=$(TEST_CC) sh $(AZ_SDK)/tools/harness/sanitize.sh --passes "$(SAN)" \
-	    $(MOD_ID):$(strip $(MAX_REDRAWS)):$(subst $(space),$(comma),$(strip $(SRCS)))
+test: $(addprefix test-,$(subst $(comma),$(space),$(SAN)))
+
+$(TEST_TARGETS): test-%: $(OUT)/test-%
+	"$<"
+
+$(OUT)/test-%: $(TEST_FIXTURE) $(SRCS) $(AZ_SDK_INCLUDE)/azmod-mod.h Makefile | $(OUT)
+	$(TEST_CC) -std=gnu11 -O1 -g -Wall -Wextra -Werror -fno-omit-frame-pointer \
+	    $(SAN_FLAGS_$*) -DAZ_ANALYSIS_CLIENT_LOCAL_SOURCE -I. -I"$(AZ_SDK_INCLUDE)" "$<" -o "$@"
 
 clean:
 	rm -rf $(OUT)

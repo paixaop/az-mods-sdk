@@ -1053,6 +1053,38 @@ refused (with the reason in your log) while a deck plays a track from that USB, 
 with a spool waiting, or from a USB it cannot place. Call it from your own thread: it watches
 the decks for 250 ms.
 
+#### Source browser
+
+`source_service(AZ_SOURCE_ABI)` discovers the optional native SOURCE service. The initial implementation is available on XDJ-AZ firmware 2.00. Check `AZ_HAS(core, source_service)` before calling and `AZ_SOURCE_HAS` for each operation. A `NULL` service means the running core or firmware cannot expose a browser in the SOURCE screen’s library and service list.
+
+Use `register_provider` when it is available. It registers one source from `init()` with an `az_source_provider_v1` descriptor. The core copies the descriptor, name, and optional icon and owns the SOURCE row. The firmware renders the catalog, playlists, and search results and sends selected track loads through the core. The provider handles listing, searching, and obtaining audio.
+
+Return playlists and tracks in the supplied typed arrays. IDs must be stable within the provider, and display strings are NUL-terminated UTF-8. The core supplies zero-based offsets and a capacity of at most `AZ_SOURCE_PAGE_MAX`. Set `count` to the rows written and `has_more` to 1 if the list continues. An empty page succeeds with both fields zero. Callbacks run serially per provider on a core worker, where network and file I/O are allowed. The core can discard a result after the user changes views or replaces a load.
+
+`prepare_track` receives the selected track and an empty staging directory. Write a complete seekable audio file directly inside that directory and return its absolute path, including the audio extension. The core owns the file after the callback returns. A provider selects `AZ_SOURCE_STREAMING` for a cache the core can evict after playback, or `AZ_SOURCE_IMPORT` to publish audio and analysis in the export library. A provider with a storage setting can call `set_storage_mode` on the overlay thread. The selected mode applies to subsequent load requests. The core returns `AZ_UNSUPPORTED` for modes unavailable in its native adapter.
+
+The provider operations are absent until a supported firmware adapter is installed. Existing mods that use custom source views can still use `register_browser`.
+
+Call `register_browser` once per mod from `init()` with `az_source_browser_v1`. The core copies the name and optional transparent PNG, adds the source to the native service list, and owns the active selection. A second registration from the same mod returns `AZ_BUSY`. The core delivers `on_view` on the overlay thread. Show the appropriate surface on `AZ_SOURCE_VIEW_BROWSE` or `AZ_SOURCE_VIEW_SEARCH`. Hide it and release focus on `AZ_SOURCE_VIEW_HIDDEN`.
+
+Check `AZ_SOURCE_HAS(source, show_view)` before supplying `on_query`. This opts into navigation through the firmware’s Browse and Search views. The core forwards the native Search keyboard’s edits to `on_query` on the overlay thread, as a borrowed UTF-8 string of at most 127 bytes. Keep your surfaces inside the area that your mod owns so the firmware can display its status controls, deck strip, and keyboard. Use `show_view` on the overlay thread to navigate programmatically. `AZ_SOURCE_VIEW_HIDDEN` requests the SOURCE screen. The mod supplies its own rows and actions and should do filesystem and network work on a worker.
+
+#### Native text entry
+
+Check `AZ_HAS(core, text_entry)`, then call `text_entry(id, &entry)` from the active mod screen
+or focused surface on the overlay thread. Set `entry.size` to `sizeof entry`, choose a title and
+a UTF-8 byte limit, and supply `on_result`. Optional strings prefill the field, label the
+action, and show a hint. A successful request copies those strings and opens the deck's
+software keyboard. The core accepts one prompt at a time and returns `AZ_UNSUPPORTED` when
+the native keyboard is unavailable for the firmware.
+
+On submit, `on_result(AZ_OK, text, user)` receives the value. Return a validation message to
+keep editing or `NULL` to accept. The callback runs on the overlay thread. Copy the text if it
+will be used after the callback. BACK, Cancel, and leaving the requesting view report
+`AZ_CANCELLED`. Failure to open an accepted prompt reports `AZ_FAILED`. In either case the
+callback receives `NULL` text and its return value is ignored. The core drops callbacks when
+the mod stops.
+
 #### Audio taps
 
 **`int audio_tap(const char *id, int source, int frames, void (*fn)(const float *lr, int frames, void *user), void *user)`**

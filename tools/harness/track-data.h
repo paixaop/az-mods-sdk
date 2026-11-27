@@ -112,8 +112,9 @@ static int ht_ref_valid(const az_track_ref *ref)
     return ref && ht_record_size(ref) >= sizeof *ref && ref->version == 1 && ref->source_id &&
            ref->source_generation && ref->library_id && ref->track_id;
 }
-static int ht_free_slot(void)
+static int ht_request_slot(void)
 {
+    if (ht_next == UINT64_MAX) return -1;
     for (int i = 0; i < 4; i++) if (!ht_slots[i].ticket) return i;
     return -1;
 }
@@ -164,7 +165,7 @@ static int ht_request(const char *id, const az_track_ref *ref, uint32_t mask, ui
     if (!ht_ref_valid(ref) || !ticket || !mask || (mask & ~31u)) return AZ_INVALID;
     if (pthread_mutex_trylock(&ht_mu)) return AZ_BUSY;
     int rc = AZ_LIMIT;
-    int i = ht_free_slot();
+    int i = ht_request_slot();
     if (i >= 0) {
         ht_track_fill(i, ref, mask);
         *ticket = ht_slots[i].ticket = ++ht_next;
@@ -245,7 +246,7 @@ static int ht_wave_request(const char *id, const az_track_ref *ref, const az_wav
     uint32_t total = ht_wave_total(q->encoding);
     if (pthread_mutex_trylock(&ht_mu)) return AZ_BUSY;
     rc = AZ_LIMIT;
-    int i = ht_free_slot();
+    int i = ht_request_slot();
     if (i >= 0) {
         ht_wave_fill(i, ref, q, total);
         *ticket = ht_slots[i].ticket = ++ht_next;
@@ -343,6 +344,11 @@ static int ht_command(const char *id, const az_command_request *r, az_command_re
     memcpy(out, &v, sizeof v);
     return AZ_UNSUPPORTED;
 }
+static int ht_command_ui_context(void)
+{
+    return !thread_lifetime && ctx != CTX_NONE;
+}
+
 static int ht_command_submit_async(const char *id, const az_command_request *request,
                                    az_command_completion_fn callback, void *user,
                                    az_command_result *out)
@@ -350,7 +356,7 @@ static int ht_command_submit_async(const char *id, const az_command_request *req
     check_id(id, "command_submit_async");
     (void)user;
     Dl_info info;
-    if ((ctx != CTX_INIT && ctx != CTX_UI) || !callback ||
+    if (!ht_command_ui_context() || !callback ||
         !dladdr((void *)callback, &info) || info.dli_fbase != mod_base) return AZ_INVALID;
     /* Synthetic harness advertises zero command capabilities. A refusal owns
      * no request and must never schedule either completion notification. */
@@ -359,7 +365,7 @@ static int ht_command_submit_async(const char *id, const az_command_request *req
 static int ht_command_acknowledge(const char *id, uint64_t request_id)
 {
     check_id(id, "command_acknowledge");
-    if ((ctx != CTX_INIT && ctx != CTX_UI) || !request_id) return AZ_INVALID;
+    if (!ht_command_ui_context() || !request_id) return AZ_INVALID;
     return AZ_STALE;
 }
 static int ht_command_poll(const char *id, uint64_t request_id, az_command_result *out)

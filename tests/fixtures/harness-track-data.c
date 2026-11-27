@@ -111,6 +111,20 @@ static void timing_precision(void)
     beats[2].time_s = 1.5;
     assert(ht_time_to_beat(&s, 1.5005, &out) == AZ_OK && out == 2);
     assert(ht_time_to_beat(&s, 1.5015, &out) == AZ_NOT_FOUND);
+    beats[0].time_s = .1;
+    beats[1].time_s = .6;
+    beats[2].time_s = 1.6;
+    assert(ht_time_to_beat(&s, .0985, &out) == AZ_NOT_FOUND);
+    assert(ht_time_to_beat(&s, .0995, &out) == AZ_OK && out == 0);
+    assert(ht_beat_to_time(&s, out, &back) == AZ_OK && compare_timestamps(back, .1, 1, 1000, 1) == AZ_TIME_EQUAL);
+    assert(ht_time_to_beat(&s, .1005, &out) == AZ_OK && fabs(out - .001) < 1e-15);
+    assert(ht_time_to_beat(&s, .5995, &out) == AZ_OK && fabs(out - .999) < 1e-15);
+    assert(ht_time_to_beat(&s, .6, &out) == AZ_OK && out == 1);
+    assert(ht_time_to_beat(&s, .6005, &out) == AZ_OK && fabs(out - 1.0005) < 1e-15);
+    assert(ht_time_to_beat(&s, 1.5995, &out) == AZ_OK && fabs(out - 1.9995) < 1e-15);
+    beats[1].time_s = NAN;
+    assert(ht_time_to_beat(&s, .7, &out) == AZ_FAILED);
+    beats[1].time_s = .6;
     az_time_interval duration = { .size = sizeof duration };
     assert(ht_interval(&s, 1., .9995, 1., &duration) == AZ_OK);
     assert(compare_timestamps(duration.source_s, 0., 1, 1000, 1) == AZ_TIME_EQUAL);
@@ -283,6 +297,10 @@ static void short_records(const az_library_v1 *library)
     assert(library->waveform_request("fixture", &safe_ref, (const az_wave_query *)tiny, &safe_ticket) == AZ_INVALID);
     assert(observations->deck_snapshot(0, (az_deck_snapshot *)tiny) == AZ_INVALID);
     assert(*tiny == sizeof *tiny);
+    assert(observations->native_cues(0, (az_native_cue_snapshot *)tiny) == AZ_INVALID);
+    assert(*tiny == sizeof *tiny);
+    assert(observations->command_target(0, 1, (az_command_target_v1 *)tiny) == AZ_INVALID);
+    assert(*tiny == sizeof *tiny);
     *tiny = sizeof *tiny;
     assert(library->data_event("fixture", 0, (az_data_change *)tiny) == AZ_INVALID);
     assert(*tiny == sizeof *tiny);
@@ -298,6 +316,10 @@ static void short_records(const az_library_v1 *library)
     *tiny = sizeof *tiny;
     assert(*tiny == sizeof *tiny && safe_ticket == UINT64_MAX);
     free(tiny);
+    az_native_cue_snapshot native = { .size = AZ_NATIVE_CUE_SNAPSHOT_V1_SIZE };
+    az_command_target_v1 target = { .size = sizeof target };
+    assert(observations->native_cues(0, &native) == AZ_UNSUPPORTED && native.size == AZ_NATIVE_CUE_SNAPSHOT_V1_SIZE);
+    assert(observations->command_target(0, 1, &target) == AZ_UNSUPPORTED && target.size == sizeof target);
     size_t earlier_size = offsetof(az_deck_snapshot, loop_unit_generation);
     void *earlier = malloc(earlier_size);
     assert(earlier);
@@ -396,36 +418,85 @@ static void initiate(void *user)
         handoff[at].owned = 1;
     } else assert(handoff[at].status == AZ_UNSUPPORTED && result.request_id == request.request_id && result.outcome == AZ_COMMAND_REJECTED);
 }
-static void noop(void *user) { (void)user; }
+static void count_post(void *user)
+{
+    assert(ctx == CTX_UI);
+    ++*(unsigned *)user;
+}
+
+static void repost(void *user)
+{
+    count_post(user);
+    if (*(unsigned *)user < 33) s_post_ui("fixture", repost, user);
+}
+
+static void post_limits(void)
+{
+    unsigned drained = 0;
+    unsigned long before_log = log_snapshot(NULL);
+    for (unsigned i = 0; i < 64; ++i) s_post_ui("fixture", count_post, &drained);
+    static unsigned first = 0, second = 1;
+    s_post_ui("fixture", initiate, &first);
+    char last[sizeof last_log];
+    assert(log_snapshot(&last) == before_log + 1 && strstr(last, "post_ui dropped"));
+    assert(post_tail - post_head == 64 && !handoff[0].owned && !handoff[0].id);
+    drain_post();
+    assert(drained == 16 && !initiation_calls);
+    s_post_ui("fixture", initiate, &second);
+    for (unsigned expected = 32; expected <= 64; expected += 16) {
+        drain_post();
+        assert(drained == expected && !initiation_calls);
+    }
+    drain_post();
+    assert(initiation_calls == 1 && !handoff[1].owned && !handoff[1].id && handoff[1].status == AZ_UNSUPPORTED);
+
+    drained = 0;
+    s_post_ui("fixture", repost, &drained);
+    drain_post();
+    assert(drained == 16 && post_tail - post_head == 1);
+    drain_post();
+    assert(drained == 32 && post_tail - post_head == 1);
+    drain_post();
+    assert(drained == 33 && post_tail == post_head);
+}
+
+static const az_command_request async_request = { .size = sizeof async_request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .request_id = 99, .expected_load_generation = 1, .deadline_ns = 1 };
+
+static void *async_worker_attempt(void *user)
+{
+    (void)user;
+    az_command_result result = { .size = sizeof result }, before = result;
+    assert(HT_COMMANDS.command_submit_async("fixture", &async_request, never_complete, NULL, &result) == AZ_INVALID);
+    assert(!memcmp(&before, &result, sizeof result));
+    assert(HT_COMMANDS.command_acknowledge("fixture", async_request.request_id) == AZ_INVALID);
+    return NULL;
+}
+
 static void asynchronous_boundary(void)
 {
     Dl_info info;
     assert(dladdr((void *)never_complete, &info));
     mod_base = info.dli_fbase;
-    az_command_request request = { .size = sizeof request, .version = AZ_DATA_VERSION, .operation = AZ_CMD_LOOP_EXIT, .request_id = 99, .expected_load_generation = 1, .deadline_ns = 1 };
     az_command_result result = { .size = sizeof result }, before = result;
     ctx = CTX_NONE;
-    assert(HT_COMMANDS.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_INVALID);
+    assert(HT_COMMANDS.command_submit_async("fixture", &async_request, never_complete, NULL, &result) == AZ_INVALID);
     assert(!memcmp(&before, &result, sizeof result));
     ctx = CTX_INIT;
-    assert(HT_COMMANDS.command_submit_async("fixture", &request, NULL, NULL, &result) == AZ_INVALID);
+    assert(HT_COMMANDS.command_submit_async("fixture", &async_request, NULL, NULL, &result) == AZ_INVALID);
     assert(!memcmp(&before, &result, sizeof result));
-    assert(HT_COMMANDS.command_submit_async("fixture", &request, never_complete, NULL, &result) == AZ_UNSUPPORTED);
-    assert(result.request_id == 99 && result.outcome == AZ_COMMAND_REJECTED);
-    assert(HT_COMMANDS.command_acknowledge("fixture", 99) == AZ_STALE);
+    for (int callback = CTX_INIT; callback <= CTX_UI; ++callback) {
+        ctx = callback;
+        assert(HT_COMMANDS.command_submit_async("fixture", &async_request, never_complete, NULL, &result) == AZ_UNSUPPORTED);
+        assert(result.request_id == async_request.request_id && result.outcome == AZ_COMMAND_REJECTED);
+        assert(HT_COMMANDS.command_acknowledge("fixture", async_request.request_id) == AZ_STALE);
+    }
     assert(HT_COMMANDS.command_acknowledge("fixture", 0) == AZ_INVALID);
-    /* Exercise the actual bounded post_ui queue. A dropped pre-admission job
-     * cannot establish ownership or require a command callback. */
+    assert(s_thread_start("fixture", "async worker", async_worker_attempt, NULL) == 0);
+    pthread_mutex_lock(&park_mu);
+    while (nthreads) pthread_cond_wait(&park_cv, &park_mu);
+    pthread_mutex_unlock(&park_mu);
     ctx = CTX_NONE;
-    for (unsigned i = 0; i < POSTQ; ++i) s_post_ui("fixture", noop, NULL);
-    static unsigned first = 0, second = 1;
-    s_post_ui("fixture", initiate, &first);
-    assert(post_tail - post_head == POSTQ && !handoff[0].owned && !handoff[0].id);
-    drain_post();
-    assert(!initiation_calls);
-    s_post_ui("fixture", initiate, &second);
-    drain_post();
-    assert(initiation_calls == 1 && !handoff[1].owned && !handoff[1].id && handoff[1].status == AZ_UNSUPPORTED);
+    post_limits();
 }
 static struct status_log {
     unsigned calls;
@@ -497,6 +568,32 @@ static void status_motion_fixture(void)
     advance(NS);
     assert(status_log.calls == 5);
 }
+
+static void ticket_exhaustion(const az_library_v1 *library, const az_track_ref *ref)
+{
+    const az_wave_query query = { sizeof query, 1, AZ_WAVE_PWV3_MONO, 0, 1, 0 };
+    ht_next = UINT64_MAX - 2;
+    uint64_t track = 0, wave = 0;
+    assert(library->track_request("fixture", ref, AZ_DATA_METADATA, &track) == AZ_OK);
+    assert(track == UINT64_MAX - 1);
+    assert(library->waveform_request("fixture", ref, &query, &wave) == AZ_OK);
+    assert(wave == UINT64_MAX);
+    const az_track_snapshot *borrowed_track = NULL;
+    const az_wave_snapshot *borrowed_wave = NULL;
+    assert(library->track_acquire("fixture", track, &borrowed_track) == AZ_OK && borrowed_track);
+    assert(library->waveform_acquire("fixture", wave, &borrowed_wave) == AZ_OK && borrowed_wave);
+    unsigned char slots_before[sizeof ht_slots];
+    memcpy(slots_before, ht_slots, sizeof slots_before);
+    uint64_t sequence = ht_sequence, out = 875;
+    assert(library->track_request("fixture", ref, AZ_DATA_METADATA, &out) == AZ_LIMIT && out == 875);
+    assert(library->waveform_request("fixture", ref, &query, &out) == AZ_LIMIT && out == 875);
+    assert(!memcmp(slots_before, ht_slots, sizeof slots_before) && ht_sequence == sequence && ht_next == UINT64_MAX);
+    assert(borrowed_track->track.track_id == ref->track_id && borrowed_wave->columns[0] == 0);
+    assert(library->track_release("fixture", track) == AZ_OK);
+    assert(library->track_release("fixture", wave) == AZ_OK);
+    assert(library->waveform_request("fixture", ref, &query, &out) == AZ_LIMIT && out == 875);
+}
+
 int main(void)
 {
     legacy_deck_info_prefixes();
@@ -624,8 +721,10 @@ int main(void)
     az_command_request request = { .size = sizeof request, .version = 1, .operation = AZ_CMD_LOOP_EXIT, .request_id = 99, .expected_load_generation = 1, .deadline_ns = 1 };
     az_command_result result = { .size = sizeof result };
     assert(ht_command("fixture", &request, &result) == AZ_UNSUPPORTED && result.request_id == 99 && result.outcome == AZ_COMMAND_REJECTED);
+    thread_lifetime = 0; /* The remaining cases run as the overlay, with a real worker for refusal. */
     callbacks(library);
     asynchronous_boundary();
     status_motion_fixture();
+    ticket_exhaustion(library, &ref);
     return 0;
 }

@@ -27,7 +27,10 @@ static int poll_trap(int deck, az_deck_snapshot *out)
     assert(0);
     return AZ_FAILED;
 }
-static const az_library_v1 service = { .abi = AZ_LIBRARY_ABI, .size = sizeof service,   };
+static const az_library_v1 service = {
+    .abi = AZ_LIBRARY_ABI,
+    .size = sizeof service,
+};
 static az_observation_v1 service_observation = { .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .on_deck_status = subscribe, .deck_status_release = release, .deck_snapshot = poll_trap };
 static az_commands_v1 service_commands = { .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands };
 const az_library_v1 *library = &service;
@@ -162,5 +165,11 @@ int main(void)
     assert(!drawn_lines);
     draw(NULL, (az_rect){ 0, 0, 1000, 60 }, NULL);
     assert(drawn_lines == 1);
+    drawn_lines = 0;
+    draw(NULL, (az_rect){ 0, 0, 320, 60 }, NULL);
+    assert(drawn_lines == 1 && !strcmp(drawn_title, "Deck 1 / Cues"));
+    drawn_lines = 0;
+    draw(NULL, (az_rect){ 0, 0, 64, 60 }, NULL);
+    assert(!drawn_lines);
     return 0;
 }
