@@ -103,3 +103,4 @@ nav:
       - Control frames: reference-frames.md
       - Reading the program: reference-static-re.md
       - AZ-MODS internals: internals.md
+      - C complexity and coverage checks: CRAP.md

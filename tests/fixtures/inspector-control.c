@@ -40,10 +40,14 @@ static void paint(az_draw *d, int x, int y, const char *text, int px, uint32_t r
 }
 static const az_library_v1 *get_service(uint32_t abi) { return abi == AZ_LIBRARY_ABI ? &service : NULL; }
 static const az_observation_v1 *get_service_observation(uint32_t abi)
-{ return abi == AZ_OBSERVATION_ABI ? &service_observation : NULL; }
+{
+    return abi == AZ_OBSERVATION_ABI ? &service_observation : NULL;
+}
 
 static const az_commands_v1 *get_service_commands(uint32_t abi)
-{ return abi == AZ_COMMANDS_ABI ? &service_commands : NULL; }
+{
+    return abi == AZ_COMMANDS_ABI ? &service_commands : NULL;
+}
 
 static int caps(az_data_capabilities *out)
 {
@@ -105,7 +109,10 @@ static void click(void)
 }
 int main(void)
 {
-    service = (az_library_v1){ .abi = AZ_LIBRARY_ABI, .size = sizeof service,    };
+    service = (az_library_v1){
+        .abi = AZ_LIBRARY_ABI,
+        .size = sizeof service,
+    };
     service_observation = (az_observation_v1){ .abi = AZ_OBSERVATION_ABI, .size = sizeof service_observation, .data_capabilities = caps, .deck_snapshot = snapshot };
     service_commands = (az_commands_v1){ .abi = AZ_COMMANDS_ABI, .size = sizeof service_commands, .command_submit_async = submit, .command_acknowledge = acknowledge };
     az_core_v1 c = { .abi = AZ_MOD_ABI, .size = sizeof c, .library_service = get_service, .observation_service = get_service_observation, .command_service = get_service_commands, .request_redraw = redraw, .color = color, .text_width = width, .draw_text = paint };
